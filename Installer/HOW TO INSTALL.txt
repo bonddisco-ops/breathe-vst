@@ -1,0 +1,68 @@
+BREATHE 0.1 by Primal Rage Lab
+===================================
+
+---------------------------------------------------------------
+РУССКИЙ
+---------------------------------------------------------------
+
+WINDOWS
+ 1. Распакуй архив.
+ 2. Дважды кликни "Install Breathe.bat" и разреши доступ администратора.
+    (Или вручную: скопируй папку "Breathe.vst3" в C:\Program Files\Common Files\VST3)
+ 3. Пересканируй плагины в DAW.
+ "Breathe.exe" - отдельная программа, работает без DAW.
+
+MAC
+ 1. Распакуй архив.
+ 2. Нажми ПРАВОЙ кнопкой на "Install Breathe.command" -> "Открыть" -> "Открыть".
+    Если macOS всё равно не пускает: Системные настройки -> Конфиденциальность и безопасность ->
+    внизу "Всё равно открыть" рядом с Install Breathe.command. Это нужно один раз.
+ 3. Установщик сам положит VST3 и AU в нужные папки и снимет блокировку macOS.
+ 4. Пересканируй плагины в DAW. В Logic плагин лежит в Audio Units -> Primal Rage Lab.
+
+ Если у тебя есть приложение Permissions Reset - можно просто закинуть в него
+ "Breathe.vst3" и "Breathe.component" после копирования в папки:
+   ~/Library/Audio/Plug-Ins/VST3
+   ~/Library/Audio/Plug-Ins/Components
+
+ Запасной вариант через Терминал (скопируй и вставь две строки):
+   xattr -cr ~/Library/Audio/Plug-Ins/VST3/"Breathe.vst3"
+   xattr -cr ~/Library/Audio/Plug-Ins/Components/"Breathe.component"
+
+КАК ПОЛЬЗОВАТЬСЯ
+ - Каждая точка на экране = своя полоса частот со своим дилеем.
+   Высота точки = сколько этой полосы уходит в дилей, колесо мыши на точке = ширина (Q).
+ - Двойной клик по пустому месту = новая точка (до 8), двойной клик по точке = убрать.
+ - Кликни точку = снизу выедет её панель: время, feedback, режим, duck, drive, diffuse.
+ - Наушники на плашке точки (или Alt+клик) = слушать только эту полосу.
+ - Dry в 0 и Wet на 100 = ставь на посыл (send).
+ - Темы оформления - шестерёнка справа вверху. Окно тянется за правый нижний угол.
+
+---------------------------------------------------------------
+ENGLISH
+---------------------------------------------------------------
+
+WINDOWS
+ 1. Unzip.
+ 2. Double-click "Install Breathe.bat" and allow admin rights.
+    (Or copy the "Breathe.vst3" folder to C:\Program Files\Common Files\VST3 yourself.)
+ 3. Rescan plugins in your DAW. "Breathe.exe" is the standalone app.
+
+MAC
+ 1. Unzip.
+ 2. RIGHT-click "Install Breathe.command" -> Open -> Open.
+    If macOS still blocks it: System Settings -> Privacy & Security -> "Open Anyway". Only once.
+ 3. The installer copies VST3 and AU and removes the macOS quarantine.
+ 4. Rescan plugins in your DAW. In Logic: Audio Units -> Primal Rage Lab.
+ Terminal fallback:
+   xattr -cr ~/Library/Audio/Plug-Ins/VST3/"Breathe.vst3"
+   xattr -cr ~/Library/Audio/Plug-Ins/Components/"Breathe.component"
+
+USING IT
+ - Every point on the screen is its own frequency band with its own delay.
+   Point height = how much of that band goes into the delay. Mouse wheel on a point = width (Q).
+ - Double-click empty space = new point (up to 8). Double-click a point = remove it.
+ - Click a point and its drawer slides up: time, feedback, mode, duck, drive, diffuse.
+ - Headphones on the point's tag (or Alt+click) = solo that band.
+ - Dry at 0 and Wet at 100 = use it on a send.
+ - Themes live under the gear, top right. Drag the bottom-right corner to resize.

@@ -1,0 +1,85 @@
+name: Build Breathe
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          else
+            cmake -B build -A x64
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build --config Release --target Breathe_All --parallel 4 2>&1 | tee build.log
+
+      - name: Show compile errors
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "error" build.log | grep -v "warning" | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+
+      - name: Collect files
+        shell: bash
+        run: |
+          mkdir -p out
+          ART=build/Breathe_artefacts/Release
+          cp -R "$ART/VST3/Breathe.vst3" out/
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            cp -R "$ART/AU/Breathe.component" out/
+            cp -R "$ART/Standalone/Breathe.app" out/
+            codesign --force --deep -s - "out/Breathe.vst3" "out/Breathe.component" "out/Breathe.app" || true
+            cp "Installer/Install Breathe.command" out/
+            chmod +x "out/Install Breathe.command"
+          else
+            cp "$ART/Standalone/Breathe.exe" out/
+            cp "Installer/Install Breathe.bat" out/
+          fi
+          cp "Installer/HOW TO INSTALL.txt" out/
+          cd out
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            ditto -c -k --keepParent . "../Breathe-macOS.zip"
+          else
+            7z a -tzip "../Breathe-Windows.zip" . > /dev/null
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Breathe-${{ matrix.name }}
+          path: out/
+
+      - name: Publish to the "latest" release
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title "Breathe (latest build)" --notes "Fresh build from the main branch. Download the zip for your system." --prerelease
+          gh release upload latest Breathe-*.zip --clobber
