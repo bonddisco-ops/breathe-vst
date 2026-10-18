@@ -160,6 +160,28 @@ namespace Dsp
     };
 
     //==========================================================================
+    // Fast random shimmer (band-limited noise ~3-30 Hz), output roughly -1..1
+    struct Shimmer
+    {
+        juce::Random rnd;
+        float lp1 = 0, lp2 = 0, hp = 0, c1 = 0, c2 = 0;
+        void prepare (double fs, juce::int64 seed)
+        {
+            rnd.setSeed (seed);
+            c1 = (float) (1.0 - std::exp (-2.0 * pi * 30.0 / fs));
+            c2 = (float) (1.0 - std::exp (-2.0 * pi * 3.0 / fs));
+            lp1 = lp2 = hp = 0;
+        }
+        float next()
+        {
+            const float w = rnd.nextFloat() * 2.0f - 1.0f;
+            lp1 += c1 * (w - lp1);
+            lp2 += c2 * (lp1 - lp2);
+            return juce::jlimit (-1.0f, 1.0f, (lp1 - lp2) * 9.0f);
+        }
+    };
+
+    //==========================================================================
     // Non-linear stage of one band, one channel. Runs at the oversampled rate.
     // Tube: biased tanh (even + odd), tape: tanh with a bit of magnetic memory,
     // transformer: saturates with low-frequency flux.
@@ -174,29 +196,31 @@ namespace Dsp
         }
         void reset() { tapePrevX = tapePrevY = flux = 0; }
 
-        // gTube, bTube: tube drive and bias; gTape: tape drive; tXf: transformer amount
-        inline float process (float x, float gTube, float bTube, float gTape, float tXf)
+        // In series, like a real chain: tube -> tape -> transformer.
+        // gTube, bTube: tube drive and bias; gTape: tape drive; tXf: transformer amount;
+        // jitter: fast tiny wobble of the harmonics only (the clean signal is not touched by it)
+        inline float process (float x, float gTube, float bTube, float gTape, float tXf, float jitter)
         {
             float y = x;
             if (gTube > 1.0e-4f)
             {
                 const float s = std::tanh (gTube * bTube);
-                y += (std::tanh (gTube * (x + bTube)) - s) / (gTube * (1.0f - s * s)) - x;
+                y = (std::tanh (gTube * (y + bTube)) - s) / (gTube * (1.0f - s * s));
             }
             if (gTape > 1.0e-4f)
             {
-                const float u = x + 0.12f * (tapePrevY - tapePrevX);
+                const float u = y + 0.12f * (tapePrevY - tapePrevX);
                 const float t = std::tanh (gTape * u) / gTape;
-                tapePrevX = x;
+                tapePrevX = y;
                 tapePrevY = t;
-                y += t - x;
+                y = t;
             }
             if (tXf > 1.0e-6f)
             {
-                flux += fluxCoef * (x - flux);
-                y -= x * 0.3f * std::tanh (tXf * flux * flux * 3.3333f);     // soft: never squeezes more than 30 %
+                flux += fluxCoef * (y - flux);
+                y -= y * 0.3f * std::tanh (tXf * flux * flux * 3.3333f);     // soft: never squeezes more than 30 %
             }
-            return y;
+            return x + (y - x) * (1.0f + jitter);
         }
     };
 

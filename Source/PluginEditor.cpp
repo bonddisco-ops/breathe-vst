@@ -9,7 +9,7 @@ constexpr float W = (float) BreatheEditor::baseW, H = (float) BreatheEditor::bas
 constexpr float pi = MathConstants<float>::pi;
 const Rectangle<float> tubeWin { cx - 58.0f, 134.0f, 116.0f, 192.0f };
 const Rectangle<float> scr { 300.0f, 392.0f, 580.0f, 124.0f };
-const Point<float> gearC { 1095.0f, 46.0f }, bypassC { 1066.0f, 386.0f }, ovsC { cx - 96.0f, 353.0f }, linC { cx + 96.0f, 353.0f },
+const Point<float> gearC { 1095.0f, 46.0f }, bypassC { 1040.0f, 44.0f }, ovsC { cx - 96.0f, 353.0f }, linC { cx + 96.0f, 353.0f },
                    masterC { cx - 24.0f, 353.0f }, mixC { cx + 32.0f, 353.0f };
 constexpr float meterTop = 138.0f, meterBot = 320.0f;
 const float lightAngle = std::atan2 (-1.0f, -0.7f);
@@ -539,7 +539,7 @@ void BreatheEditor::buildPanel (float phys)
         else
             engrave (g, t, d.name, d.x, d.y + 46, uiFont (10.0f, true, 0.05f), Justification::centred, t.ink, 100);
     }
-    engrave (g, t, "BYPASS", bypassC.x, bypassC.y - 27, uiFont (9.0f, true, 0.05f), Justification::centred, t.mute, 100);
+    engrave (g, t, "BYPASS", bypassC.x, bypassC.y + 31, uiFont (9.0f, true, 0.05f), Justification::centred, t.mute, 100);
 
     // screen bezel
     {

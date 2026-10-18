@@ -119,6 +119,27 @@ int main (int argc, char** argv)
         return 0;
     }
 
+    if (argc > 2 && String (argv[2]) == "pd")
+    {
+        for (float amp : { 0.1f, 1.0f, 10.0f })
+            for (int lin = 1; lin >= 0; --lin)
+            {
+                defaults (p, lin, 2);
+                setP (p, Params::band[0], 0.65f); setP (p, Params::band[1], 0.9f); setP (p, Params::band[2], 1); setP (p, Params::band[3], 1);
+                setP (p, Params::input, -9.0f); setP (p, Params::age, 0.1f);
+                prepare (p);
+                String line = String (Decibels::gainToDecibels (amp), 0) + " dBFS " + (lin ? "LIN    " : "analog ");
+                for (float f : { 30.0f, 100.0f, 300.0f, 1000.0f, 3000.0f, 6000.0f, 10000.0f, 16000.0f })
+                {
+                    auto o = run (p, sine (f, 2.0f, amp));
+                    const float l = Decibels::gainToDecibels (harmonic (o, 0, 72000, 19200, f) / amp), r = Decibels::gainToDecibels (harmonic (o, 1, 72000, 19200, f) / amp);
+                    line << String (f / 1000.0f, 2) << "k " << String (l, 1) << "/" << String (r, 1) << "  ";
+                }
+                std::cout << line << "\n";
+            }
+        return 0;
+    }
+
     // ---------------------------------------------------------------- transparency
     for (int lin = 1; lin >= 0; --lin)
     {
@@ -305,6 +326,52 @@ int main (int argc, char** argv)
         }
         std::cout << "== IN +12 dB: level change " << (lvl[1] - lvl[0]) << " dB, THD " << thd[0] << " % -> " << thd[1] << " %\n";
         check (std::abs (lvl[1] - lvl[0]) < 1.0f && thd[1] > thd[0] * 2.0f, "IN drives the iron harder without changing the level");
+    }
+
+    // ---------------------------------------------------------------- hot signals: no holes, LIN = analog, L = R
+    {
+        std::cout << "== hot signal (+20 dBFS sine), every knob high\n";
+        float worstHole = 0, best = -100, worstDiff = 0, worstLR = 0;
+        for (float f : { 100.0f, 145.0f, 1000.0f, 3000.0f, 6000.0f, 10000.0f })
+        {
+            float g[2] {};
+            for (int lin = 0; lin < 2; ++lin)
+            {
+                defaults (p, lin, 2);
+                setP (p, Params::xover[0], 145.0f);
+                setP (p, Params::band[0], 0.65f); setP (p, Params::band[1], 0.9f); setP (p, Params::band[2], 1); setP (p, Params::band[3], 1);
+                setP (p, Params::age, 1.0f);
+                prepare (p);
+                auto o = run (p, sine (f, 2.0f, 10.0f));
+                const float l = Decibels::gainToDecibels (harmonic (o, 0, 72000, 19200, f) / 10.0f), r = Decibels::gainToDecibels (harmonic (o, 1, 72000, 19200, f) / 10.0f);
+                g[lin] = l;
+                worstLR = jmax (worstLR, std::abs (l - r));
+                worstHole = jmin (worstHole, l);
+                best = jmax (best, l);
+            }
+            worstDiff = jmax (worstDiff, std::abs (g[0] - g[1]));
+            std::cout << "   " << f << " Hz: analog " << String (g[0], 1) << " dB, LIN " << String (g[1], 1) << " dB\n";
+        }
+        check (best - worstHole < 6.0f, "no holes at the crossovers even when slammed (spread " + String (best - worstHole, 1) + " dB)");
+        check (worstDiff < 1.5f, "LIN and analog phase give the same curve when slammed (diff " + String (worstDiff, 2) + " dB)");
+        check (worstLR < 1.5f, "left and right stay together when slammed (diff " + String (worstLR, 2) + " dB)");
+    }
+    {
+        // channels must not wander apart in level, even with AGE and MIX at full
+        defaults (p, true, 2);
+        for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 1.0f);
+        setP (p, Params::mode, 1); setP (p, Params::age, 1.0f);
+        prepare (p);
+        auto o = run (p, noise (8.0f, 0.3f, 21));
+        float worst = 0;
+        for (int i = (int) SR * 2; i + 4800 < o.getNumSamples(); i += 4800)
+            worst = jmax (worst, std::abs (Decibels::gainToDecibels (rms (o, 0, i, 4800) / rms (o, 1, i, 4800))));
+        auto in = noise (8.0f, 0.3f, 21);
+        float base = 0;
+        for (int i = (int) SR * 2; i + 4800 < in.getNumSamples(); i += 4800)
+            base = jmax (base, std::abs (Decibels::gainToDecibels (rms (in, 0, i, 4800) / rms (in, 1, i, 4800))));
+        std::cout << "== L/R level wander with AGE + MIX at full: " << worst << " dB (input itself " << base << " dB)\n";
+        check (worst - base < 0.6f, "channels keep their level, only the harmonics shimmer");
     }
 
     // ---------------------------------------------------------------- bypass keeps latency

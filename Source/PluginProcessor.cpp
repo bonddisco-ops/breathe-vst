@@ -128,8 +128,9 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
     dryBuf.setSize (2, maxBlock);
     wetBuf.setSize (2, maxBlock);
     apBuf.setSize (2, maxBlock);
+    eqBuf.setSize (2, maxBlock);
     for (int ch = 0; ch < 2; ++ch)
-        for (auto* v : { &gTubeA[ch], &bTubeA[ch], &gTapeA[ch], &tXfA[ch] })
+        for (auto* v : { &gTubeA[ch], &bTubeA[ch], &gTapeA[ch], &tXfA[ch], &jitA[ch] })
             v->assign ((size_t) maxBlock, 0.0f);
     inGainA.assign ((size_t) maxBlock, 1.0f);
 
@@ -144,15 +145,14 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
     {
         for (int ch = 0; ch < 2; ++ch)
         {
-            b.driftDrive[ch].prepare (sr, 0.13f + 0.05f * (float) ch, 1000 + bi * 10 + ch);
-            b.driftBias[ch].prepare (sr, 0.07f + 0.03f * (float) ch, 2000 + bi * 10 + ch);
+            b.shimmer[ch].prepare (sr, 1000 + bi * 10 + ch);
+            b.pPre[ch] = b.pPost[ch] = 1.0e-9;
+            b.satGain[ch] = 1.0f;
             b.dcX[ch] = b.dcY[ch] = 0.0f;
         }
         b.pFast = b.pLift = 0.0;
         b.pRef = 1.0e-6;
-        b.pPre = b.pPost = 1.0e-9;
         b.optoF = b.optoS = b.makeup = b.lift = b.sag = 0.0f;
-        b.satGain = 1.0f;
         b.amount.reset (sr, 0.05);
         b.amount.setCurrentAndTargetValue (Dsp::taper (knob[bi]->load()));
         b.act = b.amount.getTargetValue() > 0.0f ? 1.0f : 0.0f;
@@ -306,12 +306,31 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     }
     else
     {
+        // the Pultec curve sits before the iron in both phase modes, so both sound the same
+        {
+            float e[4];
+            for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue();
+            const auto k = Dsp::pultec (sampleRate, e, xoNow, ms.eq);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                eqBuf.copyFrom (ch, 0, dryBuf, ch, 0, n);
+                float* d = eqBuf.getWritePointer (ch);
+                for (int st = 0; st < Dsp::pultecStages; ++st)
+                {
+                    const auto& c = k[(size_t) st];
+                    eq[st][ch].k = c;
+                    if (std::abs (c.b0 - 1.0) < 1.0e-9 && std::abs (c.a1) < 1.0e-9 && std::abs (c.b1) < 1.0e-9) { eq[st][ch].reset(); continue; }
+                    for (int i = 0; i < n; ++i) d[i] = eq[st][ch].process (d[i]);
+                }
+            }
+        }
         split1.setCutoffFrequency (xoNow[0]); comp1.setCutoffFrequency (xoNow[0]); dryAp1.setCutoffFrequency (xoNow[0]);
         split2.setCutoffFrequency (xoNow[1]); dryAp2.setCutoffFrequency (xoNow[1]);
         split3.setCutoffFrequency (xoNow[2]); comp3.setCutoffFrequency (xoNow[2]); dryAp3.setCutoffFrequency (xoNow[2]);
         for (int ch = 0; ch < 2; ++ch)
         {
-            const float* x = dryBuf.getReadPointer (ch);
+            const float* x = eqBuf.getReadPointer (ch);
+            const float* xd = dryBuf.getReadPointer (ch);
             float* b0 = bandBuf[0].getWritePointer (ch); float* b1 = bandBuf[1].getWritePointer (ch);
             float* b2 = bandBuf[2].getWritePointer (ch); float* b3 = bandBuf[3].getWritePointer (ch);
             float* ap = apBuf.getWritePointer (ch);
@@ -323,7 +342,7 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
                 hi = comp1.processSample (ch, hi);       // high branch gets the phase of the xover1 split
                 split1.processSample (ch, lo, b0[i], b1[i]);
                 split3.processSample (ch, hi, b2[i], b3[i]);
-                ap[i] = dryAp3.processSample (ch, dryAp2.processSample (ch, dryAp1.processSample (ch, x[i])));
+                ap[i] = dryAp3.processSample (ch, dryAp2.processSample (ch, dryAp1.processSample (ch, xd[i])));
             }
         }
     }
@@ -341,26 +360,6 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
         bands[b].gain = target;
         for (int ch = 0; ch < 2; ++ch)
             wetBuf.addFromWithRamp (ch, 0, bandBuf[b].getReadPointer (ch), n, g0, target);
-    }
-
-    // ---- Pultec curve (minimum phase). In linear mode it is folded into the band filters.
-    if (! linear)
-    {
-        float e[4];
-        for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue();
-        const auto k = Dsp::pultec (sampleRate, e, xoNow, ms.eq);
-        for (int s = 0; s < Dsp::pultecStages; ++s)
-            for (int ch = 0; ch < 2; ++ch)
-            {
-                eq[s][ch].k = k[(size_t) s];
-                if (std::abs (k[(size_t) s].b0 - 1.0) < 1.0e-9 && std::abs (k[(size_t) s].a1) < 1.0e-9 && std::abs (k[(size_t) s].b1) < 1.0e-9)
-                {
-                    eq[s][ch].reset();
-                    continue;
-                }
-                float* d = wetBuf.getWritePointer (ch);
-                for (int i = 0; i < n; ++i) d[i] = eq[s][ch].process (d[i]);
-            }
     }
 
     // ---- output: mix, idle path (true bypass when every knob is at zero), output gain, bypass
@@ -481,7 +480,8 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
             const float g = std::exp (gainDb * 0.11512925f);
             d0[i] *= g; d1[i] *= g;
         }
-        B.pPre += cMeas * (0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]) - B.pPre);
+        B.pPre[0] += cMeas * ((double) d0[i] * d0[i] - B.pPre[0]);
+        B.pPre[1] += cMeas * ((double) d1[i] * d1[i] - B.pPre[1]);
 
         // the supply sags on loud moments: more drive, more bias (this is dynamics, not wobble, so the low band keeps it)
         const float sagT = jlimit (0.0f, 2.0f, (float) std::sqrt (B.pFast / (B.pRef + 1.0e-12)) - 1.0f);
@@ -489,9 +489,10 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         const float se = std::sqrt (e);
         for (int ch = 0; ch < 2; ++ch)
         {
-            const float dd = B.driftDrive[ch].next(), db = B.driftBias[ch].next();
-            const float driveMul = (1.0f + B.tolDrive[ch] * (0.5f + age)) * (1.0f + (0.04f + 0.10f * age) * life * dd) * (1.0f + 0.15f * B.sag);
-            const float biasMul = (1.0f + B.tolBias[ch]) * (1.0f + 0.6f * age * life * db + 0.5f * B.sag);
+            // the channels differ a little (part tolerances) but never drift in level: only the harmonics shimmer
+            const float driveMul = (1.0f + B.tolDrive[ch] * (0.5f + age)) * (1.0f + 0.15f * B.sag);
+            const float biasMul = (1.0f + B.tolBias[ch]) * (1.0f + 0.5f * B.sag);
+            jitA[ch][(size_t) i] = life > 0.0f ? (0.1f + 0.3f * age) * life * B.shimmer[ch].next() : 0.0f;
             gTubeA[ch][(size_t) i] = kTube * se * driveMul;
             bTubeA[ch][(size_t) i] = baseBias * biasMul;
             gTapeA[ch][(size_t) i] = kTape * se * driveMul;
@@ -514,7 +515,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
             for (int i = 0; i < (int) up.getNumSamples(); ++i)
             {
                 const int k = i >> f;
-                d[i] = s.process (d[i], gTubeA[ch][(size_t) k], bTubeA[ch][(size_t) k], gTapeA[ch][(size_t) k], tXfA[ch][(size_t) k]);
+                d[i] = s.process (d[i], gTubeA[ch][(size_t) k], bTubeA[ch][(size_t) k], gTapeA[ch][(size_t) k], tXfA[ch][(size_t) k], jitA[ch][(size_t) k]);
             }
         }
         o->processSamplesDown (blk);
@@ -525,7 +526,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         {
             float* d = buf.getWritePointer (ch);
             for (int i = 0; i < n; ++i)
-                d[i] = B.sat[ch].process (d[i], gTubeA[ch][(size_t) i], bTubeA[ch][(size_t) i], gTapeA[ch][(size_t) i], tXfA[ch][(size_t) i]);
+                d[i] = B.sat[ch].process (d[i], gTubeA[ch][(size_t) i], bTubeA[ch][(size_t) i], gTapeA[ch][(size_t) i], tXfA[ch][(size_t) i], jitA[ch][(size_t) i]);
         }
     }
 
@@ -534,13 +535,17 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     const float R5 = (float) (1.0 - 2.0 * Dsp::pi * 5.0 / fs);
     const float cSg = (float) coef (0.3);
     for (int i = 0; i < n; ++i)
-        B.pPost += cMeas * (0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]) - B.pPost);
-    const float sgT = B.pPost > 1.0e-10 ? jlimit (0.7f, 1.4f, (float) std::sqrt (B.pPre / B.pPost)) : 1.0f;
+    {
+        B.pPost[0] += cMeas * ((double) d0[i] * d0[i] - B.pPost[0]);
+        B.pPost[1] += cMeas * ((double) d1[i] * d1[i] - B.pPost[1]);
+    }
     for (int ch = 0; ch < 2; ++ch)
     {
         float* d = buf.getWritePointer (ch);
         const float* dl = ch == 0 ? dl0 : dl1;
-        float act = B.act, sg = B.satGain;
+        // each channel keeps its own level after the iron
+        const float sgT = B.pPost[ch] > 1.0e-10 ? jlimit (0.5f, 2.0f, (float) std::sqrt (B.pPre[ch] / B.pPost[ch])) : 1.0f;
+        float act = B.act, sg = B.satGain[ch];
         for (int i = 0; i < n; ++i)
         {
             sg += cSg * (sgT - sg);
@@ -551,7 +556,8 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
             act = targetAct > act ? jmin (1.0f, act + actStep) : jmax (0.0f, act - actStep);
             d[i] = dl[i] + (y - dl[i]) * act;
         }
-        if (ch == 1) { B.act = act; B.satGain = sg; }
+        B.satGain[ch] = sg;
+        if (ch == 1) B.act = act;
     }
     if (B.act <= 0.0f)
         for (auto& s : B.sat) s.reset();

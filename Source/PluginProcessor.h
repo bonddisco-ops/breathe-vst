@@ -84,18 +84,18 @@ private:
     struct Band
     {
         Dsp::Saturator sat[2];
-        Dsp::Drift driftDrive[2], driftBias[2];
+        Dsp::Shimmer shimmer[2];
         float tolDrive[2] {}, tolBias[2] {};
-        double pFast = 0, pRef = 1.0e-6, pLift = 0, pPre = 1.0e-9, pPost = 1.0e-9;
-        float optoF = 0, optoS = 0, makeup = 0, lift = 0, sag = 0, satGain = 1;
+        double pFast = 0, pRef = 1.0e-6, pLift = 0, pPre[2] { 1.0e-9, 1.0e-9 }, pPost[2] { 1.0e-9, 1.0e-9 };
+        float optoF = 0, optoS = 0, makeup = 0, lift = 0, sag = 0, satGain[2] { 1, 1 };
         float dcX[2] {}, dcY[2] {};
         float act = 0, gain = 1;
         juce::SmoothedValue<float> amount;
         Dsp::Recipe recipe {};
     } bands[4];
 
-    juce::AudioBuffer<float> bandBuf[4], dryBuf, wetBuf, apBuf;
-    std::vector<float> gTubeA[2], bTubeA[2], gTapeA[2], tXfA[2], inGainA;
+    juce::AudioBuffer<float> bandBuf[4], dryBuf, wetBuf, apBuf, eqBuf;
+    std::vector<float> gTubeA[2], bTubeA[2], gTapeA[2], tXfA[2], jitA[2], inGainA;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> rawDelay { 1 << 16 }, apDelay { 1 << 16 }, bandDelay[4];
 
     // ---- post EQ for minimum-phase mode

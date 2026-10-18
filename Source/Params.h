@@ -58,10 +58,10 @@ namespace Params
                    AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
         l.add (std::make_unique<AudioParameterFloat> (ParameterID { age, 1 }, "Age", NormalisableRange<float> (0.0f, 1.0f), 0.4f,
                    AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
-        l.add (std::make_unique<AudioParameterFloat> (ParameterID { output, 1 }, "Output", NormalisableRange<float> (-12.0f, 12.0f), 0.0f,
+        l.add (std::make_unique<AudioParameterFloat> (ParameterID { output, 1 }, "Output", NormalisableRange<float> (-30.0f, 30.0f), 0.0f,
                    AudioParameterFloatAttributes().withLabel ("dB")
                        .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
-        l.add (std::make_unique<AudioParameterFloat> (ParameterID { input, 1 }, "Input", NormalisableRange<float> (-12.0f, 12.0f), 0.0f,
+        l.add (std::make_unique<AudioParameterFloat> (ParameterID { input, 1 }, "Input", NormalisableRange<float> (-30.0f, 30.0f), 0.0f,
                    AudioParameterFloatAttributes().withLabel ("dB")
                        .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
         l.add (std::make_unique<AudioParameterChoice> (ParameterID { mode, 1 }, "Mode", StringArray { "MASTER", "MIX" }, 0));
