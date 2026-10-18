@@ -18,6 +18,8 @@ namespace Params
     inline const char* const ovs = "ovs";
     inline const char* const lin = "linear";
     inline const char* const bypass = "bypass";
+    inline const char* const input = "input";
+    inline const char* const mode = "mode";
 
     inline const juce::StringArray ovsNames { "1x", "2x", "4x", "8x", "16x" };
 
@@ -59,6 +61,10 @@ namespace Params
         l.add (std::make_unique<AudioParameterFloat> (ParameterID { output, 1 }, "Output", NormalisableRange<float> (-12.0f, 12.0f), 0.0f,
                    AudioParameterFloatAttributes().withLabel ("dB")
                        .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
+        l.add (std::make_unique<AudioParameterFloat> (ParameterID { input, 1 }, "Input", NormalisableRange<float> (-12.0f, 12.0f), 0.0f,
+                   AudioParameterFloatAttributes().withLabel ("dB")
+                       .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
+        l.add (std::make_unique<AudioParameterChoice> (ParameterID { mode, 1 }, "Mode", StringArray { "MASTER", "MIX" }, 0));
         l.add (std::make_unique<AudioParameterChoice> (ParameterID { ovs, 1 }, "Oversampling", ovsNames, 1));
         l.add (std::make_unique<AudioParameterBool> (ParameterID { lin, 1 }, "Linear Phase", true));
         l.add (std::make_unique<AudioParameterBool> (ParameterID { bypass, 1 }, "Bypass", false));

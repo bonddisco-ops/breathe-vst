@@ -10,7 +10,23 @@ namespace Dsp
     constexpr double pi = juce::MathConstants<double>::pi;
 
     // Knob position -> amount. The first half of the knob is the finest part of the travel.
-    inline float taper (float knob) { return std::pow (juce::jlimit (0.0f, 1.0f, knob), 1.6f); }
+    // A tiny dead zone at the bottom makes "zero" really zero, whatever the host sends back.
+    constexpr float deadZone = 0.001f;
+    inline bool isOn (float knob) { return knob >= deadZone; }
+    inline float taper (float knob) { return isOn (knob) ? std::pow (juce::jlimit (0.0f, 1.0f, knob), 1.4f) : 0.0f; }
+
+    // How hard each part works at full knob, per mode. MASTER is the default.
+    struct ModeScale { float sat, opto[4], lift[4], life, eq; };
+    constexpr ModeScale master { 2.5f, { 3.5f, 2.0f, 0.0f, 0.0f }, { 0.0f, 0.3f, 3.5f, 4.5f }, 1.5f, 1.33f };
+    constexpr ModeScale mixMode { 5.0f, { 6.0f, 4.0f, 0.0f, 0.0f }, { 0.0f, 0.6f, 6.0f, 8.0f }, 3.0f, 4.5f };
+    inline ModeScale blend (float m)
+    {
+        auto l = [m] (float a, float b) { return a + (b - a) * m; };
+        ModeScale r {};
+        r.sat = l (master.sat, mixMode.sat); r.life = l (master.life, mixMode.life); r.eq = l (master.eq, mixMode.eq);
+        for (int i = 0; i < 4; ++i) { r.opto[i] = l (master.opto[i], mixMode.opto[i]); r.lift[i] = l (master.lift[i], mixMode.lift[i]); }
+        return r;
+    }
 
     //==========================================================================
     // Plain biquad (RBJ cookbook), transposed direct form II
@@ -73,8 +89,9 @@ namespace Dsp
     // Every band knob drives its own part of the curve; it follows the crossovers.
     constexpr int pultecStages = 6;
 
-    inline std::array<BiquadCoefs, pultecStages> pultec (double fs, const float e[4], const float xo[3])
+    inline std::array<BiquadCoefs, pultecStages> pultec (double fs, const float e0[4], const float xo[3], float scale)
     {
+        const double e[4] { e0[0] * scale, e0[1] * scale, e0[2] * scale, e0[3] * scale };
         return {
             BiquadCoefs::lowShelf (fs, juce::jlimit (25.0, 120.0, xo[0] * 0.5), 0.9, 1.5 * e[0]),          // big low end
             BiquadCoefs::peak (fs, juce::jlimit (120.0, 500.0, xo[0] * 1.7), 0.8, -0.7 * e[0]),            // ...and the dip above it
@@ -86,15 +103,14 @@ namespace Dsp
     }
 
     //==========================================================================
-    // Harmonic recipe of a band, by its centre frequency. Values = THD (fraction) at full knob
-    // for a -9 dBFS sine in that band.
+    // Harmonic recipe of a band, by its centre frequency. Values = THD (fraction) before the mode scale.
     struct Recipe { float transformer, tape, tube; };
 
     inline Recipe recipeAt (float centreHz)
     {
         struct Anchor { float f; Recipe r; };
         static const Anchor a[] = {
-            { 50.0f,    { 0.010f, 0.005f, 0.001f } },
+            { 50.0f,    { 0.006f, 0.005f, 0.001f } },
             { 350.0f,   { 0.000f, 0.003f, 0.010f } },
             { 2400.0f,  { 0.000f, 0.002f, 0.005f } },
             { 11000.0f, { 0.000f, 0.002f, 0.0005f } },
@@ -113,9 +129,6 @@ namespace Dsp
         return a[3].r;
     }
 
-    // Opto squeeze (max dB of gain reduction) and quiet-lift (max dB) per band at full knob
-    constexpr float optoMax[4] = { 2.5f, 1.5f, 0.0f, 0.0f };
-    constexpr float liftMax[4] = { 0.0f, 1.0f, 2.5f, 3.0f };
 
     //==========================================================================
     // Slow random wander (analog drift), output roughly -1..1
@@ -181,14 +194,14 @@ namespace Dsp
             if (tXf > 1.0e-6f)
             {
                 flux += fluxCoef * (x - flux);
-                y += x / (1.0f + tXf * flux * flux) - x;
+                y -= x * 0.3f * std::tanh (tXf * flux * flux * 3.3333f);     // soft: never squeezes more than 30 %
             }
             return y;
         }
     };
 
-    // THD target -> drive values, for the reference level of a -9 dBFS sine
-    constexpr float refAmp = 0.355f;
+    // THD target -> drive values. Reference: a band playing at -18 dBFS RMS (typical of real music)
+    constexpr float refAmp = 0.178f;
     inline float tubeDrive (float thd)  { return std::sqrt (7.2f * thd) / refAmp; }        // ~60 % of THD as the 3rd harmonic
     inline float tubeBias (float thd, float g)
     {

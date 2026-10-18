@@ -4,54 +4,51 @@
 using namespace juce;
 
 //==============================================================================
-// Designs the linear-phase band kernels on its own thread whenever the crossovers
-// or the band knobs (which shape the folded-in Pultec curve) move.
+// Designs the linear-phase band filters (with the Pultec curve folded in) on its own
+// thread whenever the crossovers, the band knobs or the mode change.
 class BreatheProcessor::Designer : public Thread
 {
 public:
-    explicit Designer (BreatheProcessor& p) : Thread ("Breathe kernels"), proc (p) {}
+    explicit Designer (BreatheProcessor& p) : Thread ("Breathe filters"), proc (p) {}
 
     void run() override
     {
         while (! threadShouldExit())
         {
-            designIfChanged (false);
-            wait (25);
+            if (auto s = designIfChanged (false))
+                proc.splitter.offer (std::move (s));
+            wait (20);
         }
     }
 
-    // returns true if new kernels were handed over
-    bool designIfChanged (bool force)
+    std::unique_ptr<LinPhaseSplitter::Spectra> designIfChanged (bool force)
     {
         const double fs = proc.sampleRate;
         float x[3], e[4];
         for (int i = 0; i < 3; ++i) x[i] = proc.xo[i]->load();
         for (int b = 0; b < 4; ++b) e[b] = Dsp::taper (proc.knob[b]->load());
+        const float m = proc.modeP->load();
 
-        bool changed = force || fs != lastRate;
+        bool changed = force || fs != lastRate || m != lastMode;
         for (int i = 0; i < 3; ++i) changed |= std::abs (x[i] - lastX[i]) > 0.01f;
         for (int b = 0; b < 4; ++b) changed |= std::abs (e[b] - lastE[b]) > 0.0005f;
         if (! changed)
-            return false;
+            return {};
 
         lastRate = fs;
+        lastMode = m;
         std::copy (x, x + 3, lastX);
         std::copy (e, e + 4, lastE);
 
         Dsp::KernelSet ks;
-        Dsp::designKernels (ks, fs, x, Dsp::pultec (fs, e, x));
-        const SpinLock::ScopedLockType sl (proc.pendingLock);
-        for (int b = 0; b < 4; ++b)
-            proc.pending.band[(size_t) b] = std::move (ks.band[(size_t) b]);
-        proc.pendingRate = fs;
-        ++proc.pendingVersion;
-        return true;
+        Dsp::designKernels (ks, fs, x, Dsp::pultec (fs, e, x, Dsp::blend (m).eq));
+        return LinPhaseSplitter::makeSpectra (ks, fs);
     }
 
 private:
     BreatheProcessor& proc;
     double lastRate = 0.0;
-    float lastX[3] {}, lastE[4] { -1, -1, -1, -1 };
+    float lastMode = -1.0f, lastX[3] {}, lastE[4] { -1, -1, -1, -1 };
 };
 
 //==============================================================================
@@ -70,20 +67,19 @@ BreatheProcessor::BreatheProcessor()
     mixP = apvts.getRawParameterValue (Params::mix);
     ageP = apvts.getRawParameterValue (Params::age);
     outP = apvts.getRawParameterValue (Params::output);
+    inP = apvts.getRawParameterValue (Params::input);
     ovsP = apvts.getRawParameterValue (Params::ovs);
     linP = apvts.getRawParameterValue (Params::lin);
     bypassP = apvts.getRawParameterValue (Params::bypass);
+    modeP = apvts.getRawParameterValue (Params::mode);
 
-    for (auto& c : conv)
-        c = std::make_unique<dsp::Convolution> (convQueue);
-
-    // every unit is a little different: fixed part tolerances per channel
+    // every unit is a little different: fixed part tolerances per channel (not on the low band: mono bass stays mono)
     Random r (Time::currentTimeMillis());
-    for (auto& b : bands)
+    for (int b = 1; b < 4; ++b)
         for (int ch = 0; ch < 2; ++ch)
         {
-            b.tolDrive[ch] = (r.nextFloat() * 2.0f - 1.0f) * 0.04f;
-            b.tolBias[ch] = (r.nextFloat() * 2.0f - 1.0f) * 0.12f;
+            bands[b].tolDrive[ch] = (r.nextFloat() * 2.0f - 1.0f) * 0.04f;
+            bands[b].tolBias[ch] = (r.nextFloat() * 2.0f - 1.0f) * 0.12f;
         }
 
     designer = std::make_unique<Designer> (*this);
@@ -107,9 +103,9 @@ dsp::Oversampling<float>* BreatheProcessor::currentOs (int band) const
 
 void BreatheProcessor::prepareToPlay (double sr, int block)
 {
+    designer->stopThread (2000);
     sampleRate = sr;
     maxBlock = jlimit (16, 2048, block);
-    designer->stopThread (2000);
 
     const dsp::ProcessSpec spec { sr, (uint32) maxBlock, 2 };
 
@@ -135,15 +131,13 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
     for (int ch = 0; ch < 2; ++ch)
         for (auto* v : { &gTubeA[ch], &bTubeA[ch], &gTapeA[ch], &tXfA[ch] })
             v->assign ((size_t) maxBlock, 0.0f);
+    inGainA.assign ((size_t) maxBlock, 1.0f);
 
-    kernelSize = Dsp::kernelSizeFor (sr);
-    for (auto* d : { &rawDelay, &apDelay }) { d->prepare (spec); d->setMaximumDelayInSamples (kernelSize + 4096); }
+    // linear-phase filters for the current settings, ready before the first block
+    splitter.prepare (designer->designIfChanged (true));
+
+    for (auto* d : { &rawDelay, &apDelay }) { d->prepare (spec); d->setMaximumDelayInSamples (splitter.latency() + 4096); }
     for (auto& d : bandDelay) { d.prepare (spec); d.setMaximumDelayInSamples (4096); }
-
-    // linear-phase kernels: design now so the first block already uses them
-    designer->designIfChanged (true);
-    takeNewKernels();
-    for (auto& c : conv) c->prepare (spec);
 
     int bi = 0;
     for (auto& b : bands)
@@ -156,7 +150,9 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
         }
         b.pFast = b.pLift = 0.0;
         b.pRef = 1.0e-6;
+        b.pPre = b.pPost = 1.0e-9;
         b.optoF = b.optoS = b.makeup = b.lift = b.sag = 0.0f;
+        b.satGain = 1.0f;
         b.amount.reset (sr, 0.05);
         b.amount.setCurrentAndTargetValue (Dsp::taper (knob[bi]->load()));
         b.act = b.amount.getTargetValue() > 0.0f ? 1.0f : 0.0f;
@@ -165,13 +161,16 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
     }
     for (auto& st : eq) for (auto& q : st) q.reset();
 
-    mixS.reset (sr, 0.03);   mixS.setCurrentAndTargetValue (mixP->load());
-    outS.reset (sr, 0.03);   outS.setCurrentAndTargetValue (Decibels::decibelsToGain (outP->load()));
+    mixS.reset (sr, 0.03);    mixS.setCurrentAndTargetValue (mixP->load());
+    outS.reset (sr, 0.03);    outS.setCurrentAndTargetValue (Decibels::decibelsToGain (outP->load()));
+    inS.reset (sr, 0.03);     inS.setCurrentAndTargetValue (Decibels::decibelsToGain (inP->load()));
+    modeS.reset (sr, 0.05);   modeS.setCurrentAndTargetValue (modeP->load());
     bypassS.reset (sr, 0.02); bypassS.setCurrentAndTargetValue (bypassP->load() > 0.5f ? 1.0f : 0.0f);
     wetActiveS.reset (sr, 0.02);
     bool anyOn = false;
-    for (int b = 0; b < 4; ++b) anyOn |= knob[b]->load() > 0.0f || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
+    for (int b = 0; b < 4; ++b) anyOn |= Dsp::isOn (knob[b]->load()) || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
     wetActiveS.setCurrentAndTargetValue (anyOn ? 1.0f : 0.0f);
+    inPow = 0.0;
 
     ovsIndex = -1;
     configure ((int) ovsP->load(), linP->load() > 0.5f);
@@ -186,7 +185,7 @@ void BreatheProcessor::configure (int ovs, bool lin)
     if (auto* o = currentOs (0))
         osLatency = roundToInt (o->getLatencyInSamples());
     for (int t = 0; t < 2; ++t) for (int f = 1; f <= 4; ++f) for (int b = 0; b < 4; ++b) os[t][f][b]->reset();
-    for (auto& c : conv) c->reset();
+    splitter.reset();
     for (auto* f : { &split1, &split2, &split3, &comp1, &comp3, &dryAp1, &dryAp2, &dryAp3 }) f->reset();
     rawDelay.reset(); apDelay.reset();
     for (auto& d : bandDelay) d.reset();
@@ -194,25 +193,10 @@ void BreatheProcessor::configure (int ovs, bool lin)
     setLatencySamples (totalLatency());
 }
 
-void BreatheProcessor::takeNewKernels()
+void BreatheProcessor::refreshKernelsNow()
 {
-    if (pendingVersion == loadedVersion)
-        return;
-    const SpinLock::ScopedTryLockType sl (pendingLock);
-    if (! sl.isLocked() || pendingRate != sampleRate)
-        return;
-    for (int b = 0; b < 4; ++b)
-        conv[(size_t) b]->loadImpulseResponse (std::move (pending.band[(size_t) b]), sampleRate,
-                                               dsp::Convolution::Stereo::no, dsp::Convolution::Trim::no, dsp::Convolution::Normalise::no);
-    loadedVersion = pendingVersion;
-}
-
-void BreatheProcessor::waitForKernels()
-{
-    designer->designIfChanged (false);
-    takeNewKernels();
-    const dsp::ProcessSpec spec { sampleRate, (uint32) maxBlock, 2 };
-    for (auto& c : conv) c->prepare (spec);
+    if (auto s = designer->designIfChanged (false))
+        splitter.offer (std::move (s));
 }
 
 //==============================================================================
@@ -228,8 +212,6 @@ void BreatheProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     const bool wantLin = linP->load() > 0.5f;
     if (wantOvs != ovsIndex || wantLin != linear)
         configure (wantOvs, wantLin);
-    if (linear)
-        takeNewKernels();
 
     float pin[2] {}, pout[2] {};
     for (int ch = 0; ch < numCh; ++ch) pin[ch] = buffer.getMagnitude (ch, 0, total);
@@ -272,14 +254,16 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     for (int b = 0; b < 4; ++b) anySolo |= soloP[b]->load() > 0.5f;
     for (int b = 0; b < 4; ++b)
     {
-        auto& B = bands[b];
-        B.amount.setTargetValue (Dsp::taper (knob[b]->load()));
-        anyOn |= knob[b]->load() > 0.0f || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
+        bands[b].amount.setTargetValue (Dsp::taper (knob[b]->load()));
+        anyOn |= Dsp::isOn (knob[b]->load()) || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
     }
     wetActiveS.setTargetValue (anyOn ? 1.0f : 0.0f);
     mixS.setTargetValue (mixP->load());
     outS.setTargetValue (Decibels::decibelsToGain (outP->load()));
+    inS.setTargetValue (Decibels::decibelsToGain (inP->load()));
+    modeS.setTargetValue (modeP->load());
     bypassS.setTargetValue (byp ? 1.0f : 0.0f);
+    const auto ms = Dsp::blend (modeS.skip (n));
 
     float xoNow[3];
     for (int i = 0; i < 3; ++i)
@@ -292,19 +276,33 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     const float edges[5] { 20.0f, xoNow[0], xoNow[1], xoNow[2], 20000.0f };
     for (int b = 0; b < 4; ++b) bands[b].recipe = Dsp::recipeAt (std::sqrt (edges[b] * edges[b + 1]));
 
-    // ---- copy input; dry paths
+    // ---- copy input; input gain (what the iron gets) and its level for the IN knob colour
     for (int ch = 0; ch < 2; ++ch)
         dryBuf.copyFrom (ch, 0, io[jmin (ch, numCh - 1)], n);
+    {
+        const double c = 1.0 - std::exp (-1.0 / (0.3 * sampleRate));
+        const float* l = dryBuf.getReadPointer (0);
+        const float* r = dryBuf.getReadPointer (1);
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = inS.getNextValue();
+            inGainA[(size_t) i] = g;
+            const double p = 0.5 * ((double) l[i] * l[i] + (double) r[i] * r[i]) * g * g;
+            inPow += c * (p - inPow);
+        }
+        inLevelDb = (float) (10.0 * std::log10 (inPow + 1.0e-12));
+    }
 
     // ---- split into bands
     if (linear)
     {
-        for (int b = 0; b < 4; ++b)
-        {
-            for (int ch = 0; ch < 2; ++ch) bandBuf[b].copyFrom (ch, 0, dryBuf, ch, 0, n);
-            auto blk = dsp::AudioBlock<float> (bandBuf[b]).getSubBlock (0, (size_t) n);
-            conv[(size_t) b]->process (dsp::ProcessContextReplacing<float> (blk));
-        }
+        const float* in[2] { dryBuf.getReadPointer (0), dryBuf.getReadPointer (1) };
+        float* const out[4][2] {
+            { bandBuf[0].getWritePointer (0), bandBuf[0].getWritePointer (1) },
+            { bandBuf[1].getWritePointer (0), bandBuf[1].getWritePointer (1) },
+            { bandBuf[2].getWritePointer (0), bandBuf[2].getWritePointer (1) },
+            { bandBuf[3].getWritePointer (0), bandBuf[3].getWritePointer (1) } };
+        splitter.process (in, out, n);
     }
     else
     {
@@ -332,7 +330,7 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
 
     // ---- bands
     for (int b = 0; b < 4; ++b)
-        processBand (b, n, age);
+        processBand (b, n, age, ms);
 
     // ---- sum with solo / mute
     wetBuf.clear (0, n);
@@ -345,12 +343,12 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
             wetBuf.addFromWithRamp (ch, 0, bandBuf[b].getReadPointer (ch), n, g0, target);
     }
 
-    // ---- Pultec curve (minimum phase). In linear mode it is folded into the band kernels.
+    // ---- Pultec curve (minimum phase). In linear mode it is folded into the band filters.
     if (! linear)
     {
         float e[4];
         for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue();
-        const auto k = Dsp::pultec (sampleRate, e, xoNow);
+        const auto k = Dsp::pultec (sampleRate, e, xoNow, ms.eq);
         for (int s = 0; s < Dsp::pultecStages; ++s)
             for (int ch = 0; ch < 2; ++ch)
             {
@@ -367,8 +365,6 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
 
     // ---- output: mix, idle path (true bypass when every knob is at zero), output gain, bypass
     const int lat = totalLatency();
-    float avgE = 0.0f;
-    for (auto& B : bands) avgE += B.amount.getCurrentValue() * B.gain * 0.25f;
     float env = envOut;
     const float envA = (float) std::exp (-1.0 / (0.15 * sampleRate));
 
@@ -396,12 +392,11 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
         env = peak > env ? peak : env * envA;
     }
     envOut = env;
-    activity = byp ? 0.0f : avgE * mixS.getCurrentValue();
     drive = jmin (1.0f, env);
 }
 
 //==============================================================================
-void BreatheProcessor::processBand (int b, int n, float age)
+void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScale& ms)
 {
     auto& B = bands[b];
     auto& buf = bandBuf[b];
@@ -426,9 +421,7 @@ void BreatheProcessor::processBand (int b, int n, float age)
 
     // keep a delayed copy for the cross-fade between processed and untouched
     float dl0[2048], dl1[2048];
-    jassert (n <= 2048);
-    const int nn = jmin (n, 2048);
-    for (int i = 0; i < nn; ++i)
+    for (int i = 0; i < n; ++i)
     {
         bandDelay[b].pushSample (0, d0[i]); bandDelay[b].pushSample (1, d1[i]);
         dl0[i] = osLatency > 0 ? bandDelay[b].popSample (0, (float) osLatency) : d0[i];
@@ -436,22 +429,23 @@ void BreatheProcessor::processBand (int b, int n, float age)
     }
 
     // ---- dynamics at the base rate: opto squeeze + Dolby-style lift of quiet details
-    const float oMax = Dsp::optoMax[b], lMax = Dsp::liftMax[b];
+    const float oMax = ms.opto[b], lMax = ms.lift[b];
     auto coef = [fs] (double sec) { return 1.0 - std::exp (-1.0 / (sec * fs)); };
-    const double cFast = coef (0.005), cRef = coef (3.0), cRefUp = coef (0.4), cLa = coef (0.003), cLr = coef (0.06);
+    const double cFast = coef (0.005), cRef = coef (3.0), cRefUp = coef (0.4), cLa = coef (0.003), cLr = coef (0.06), cMeas = coef (0.8);
     const float aF = (float) coef (0.010), rF = (float) coef (0.08), aS = (float) coef (0.6), rS = (float) coef (1.5), cMk = (float) coef (2.5);
     const float cLift = (float) coef (0.005), cSag = (float) coef (0.02);
     const auto& R = B.recipe;
-    const float kTube = std::sqrt (7.2f * R.tube) / Dsp::refAmp, kTape = std::sqrt (12.0f * R.tape) / Dsp::refAmp;
-    const float kXf = 4.0f * R.transformer / (Dsp::refAmp * Dsp::refAmp);
-    const float baseBias = 0.079f;
-    const double humInc = 2.0 * Dsp::pi * 50.0 / fs;
-    double hp = humPhase;
+    const float kTube = std::sqrt (7.2f * R.tube * ms.sat) / Dsp::refAmp, kTape = std::sqrt (12.0f * R.tape * ms.sat) / Dsp::refAmp;
+    const float kXf = 4.0f * R.transformer * ms.sat / (Dsp::refAmp * Dsp::refAmp);
+    const float baseBias = 0.222f * Dsp::refAmp;
+    const float life = b == 0 ? 0.0f : ms.life;          // no wobble below ~100 Hz: the low end stays solid
 
     float lastGr = 0, lastLift = 0;
     for (int i = 0; i < n; ++i)
     {
         const float e = B.amount.getNextValue();
+        const float gi = inGainA[(size_t) i];
+        d0[i] *= gi; d1[i] *= gi;
         const double p = 0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]);
         B.pFast += cFast * (p - B.pFast);
         B.pRef += (p > B.pRef ? cRefUp : cRef) * (p - B.pRef);
@@ -487,25 +481,23 @@ void BreatheProcessor::processBand (int b, int n, float age)
             const float g = std::exp (gainDb * 0.11512925f);
             d0[i] *= g; d1[i] *= g;
         }
+        B.pPre += cMeas * (0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]) - B.pPre);
 
-        // the supply sags on loud moments: more drive, more bias
+        // the supply sags on loud moments: more drive, more bias (this is dynamics, not wobble, so the low band keeps it)
         const float sagT = jlimit (0.0f, 2.0f, (float) std::sqrt (B.pFast / (B.pRef + 1.0e-12)) - 1.0f);
         B.sag += cSag * (sagT - B.sag);
-        hp += humInc;
-        const float hum = 0.06f * age * (float) std::sin (hp);
         const float se = std::sqrt (e);
         for (int ch = 0; ch < 2; ++ch)
         {
             const float dd = B.driftDrive[ch].next(), db = B.driftBias[ch].next();
-            const float driveMul = (1.0f + B.tolDrive[ch] * (0.5f + age)) * (1.0f + (0.04f + 0.10f * age) * dd) * (1.0f + 0.15f * B.sag);
-            const float biasMul = (1.0f + B.tolBias[ch]) * (1.0f + 0.6f * age * db + 0.5f * B.sag) + hum;
+            const float driveMul = (1.0f + B.tolDrive[ch] * (0.5f + age)) * (1.0f + (0.04f + 0.10f * age) * life * dd) * (1.0f + 0.15f * B.sag);
+            const float biasMul = (1.0f + B.tolBias[ch]) * (1.0f + 0.6f * age * life * db + 0.5f * B.sag);
             gTubeA[ch][(size_t) i] = kTube * se * driveMul;
             bTubeA[ch][(size_t) i] = baseBias * biasMul;
             gTapeA[ch][(size_t) i] = kTape * se * driveMul;
             tXfA[ch][(size_t) i] = kXf * e * driveMul * driveMul;
         }
     }
-    if (b == 3) humPhase = std::fmod (hp, 2.0 * Dsp::pi);
     optoGr[b] = lastGr;
     liftDb[b] = lastLift;
 
@@ -537,22 +529,29 @@ void BreatheProcessor::processBand (int b, int n, float age)
         }
     }
 
-    // ---- DC blocker (bias makes a little DC), then cross-fade with the untouched band
+    // ---- level after the iron stays where it was, IN gain is taken back,
+    //      DC blocker (bias makes a little DC), then cross-fade with the untouched band
     const float R5 = (float) (1.0 - 2.0 * Dsp::pi * 5.0 / fs);
+    const float cSg = (float) coef (0.3);
+    for (int i = 0; i < n; ++i)
+        B.pPost += cMeas * (0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]) - B.pPost);
+    const float sgT = B.pPost > 1.0e-10 ? jlimit (0.7f, 1.4f, (float) std::sqrt (B.pPre / B.pPost)) : 1.0f;
     for (int ch = 0; ch < 2; ++ch)
     {
         float* d = buf.getWritePointer (ch);
         const float* dl = ch == 0 ? dl0 : dl1;
-        float act = B.act;
-        for (int i = 0; i < nn; ++i)
+        float act = B.act, sg = B.satGain;
+        for (int i = 0; i < n; ++i)
         {
-            const float y = d[i] - B.dcX[ch] + R5 * B.dcY[ch];
-            B.dcX[ch] = d[i];
+            sg += cSg * (sgT - sg);
+            const float x = d[i] * sg / inGainA[(size_t) i];
+            const float y = x - B.dcX[ch] + R5 * B.dcY[ch];
+            B.dcX[ch] = x;
             B.dcY[ch] = y;
             act = targetAct > act ? jmin (1.0f, act + actStep) : jmax (0.0f, act - actStep);
             d[i] = dl[i] + (y - dl[i]) * act;
         }
-        if (ch == 1) B.act = act;
+        if (ch == 1) { B.act = act; B.satGain = sg; }
     }
     if (B.act <= 0.0f)
         for (auto& s : B.sat) s.reset();

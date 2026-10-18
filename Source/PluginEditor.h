@@ -38,8 +38,16 @@ private:
     bool helpOn = true, ready = false;
 
     struct KnobDef { const char* id; const char* name; float x, y, r; bool big; float def; };
-    static const KnobDef knobDefs[7];
-    juce::RangedAudioParameter* knobParam[7] {};
+    static constexpr int numKnobs = 8;    // 4 bands, MIX, AGE, OUTPUT, IN
+    static const KnobDef knobDefs[numKnobs];
+    juce::RangedAudioParameter* knobParam[numKnobs] {};
+    juce::RangedAudioParameter* modeParam = nullptr;
+    struct KnobCache { juce::Image base, glow; float px = 0.0f; juce::String theme; };
+    KnobCache knobCache[numKnobs];
+    juce::Image filGlow;
+    float filGlowPx = 0.0f, physScale = 1.0f, shownInLevel = -100.0f;
+    void buildKnobCache (int k, float px);
+    juce::Colour inColour() const;
     juce::RangedAudioParameter *xoParam[3] {}, *soloParam[4] {}, *muteParam[4] {}, *ovsParam = nullptr, *linParam = nullptr, *bypassParam = nullptr;
 
     // cached static panel

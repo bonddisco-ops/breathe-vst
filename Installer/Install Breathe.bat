@@ -23,6 +23,6 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo Breathe 0.1 installed to %DEST%
+echo Breathe 0.2 installed to %DEST%
 echo Rescan plugins in your DAW. / Pereskaniruy plaginy v DAW.
 pause

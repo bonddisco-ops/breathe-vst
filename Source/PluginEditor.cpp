@@ -9,7 +9,8 @@ constexpr float W = (float) BreatheEditor::baseW, H = (float) BreatheEditor::bas
 constexpr float pi = MathConstants<float>::pi;
 const Rectangle<float> tubeWin { cx - 58.0f, 134.0f, 116.0f, 192.0f };
 const Rectangle<float> scr { 300.0f, 392.0f, 580.0f, 124.0f };
-const Point<float> gearC { 1095.0f, 46.0f }, bypassC { 974.0f, 452.0f }, ovsC { cx - 96.0f, 353.0f }, linC { cx + 96.0f, 353.0f };
+const Point<float> gearC { 1095.0f, 46.0f }, bypassC { 1066.0f, 386.0f }, ovsC { cx - 96.0f, 353.0f }, linC { cx + 96.0f, 353.0f },
+                   masterC { cx - 24.0f, 353.0f }, mixC { cx + 32.0f, 353.0f };
 constexpr float meterTop = 138.0f, meterBot = 320.0f;
 const float lightAngle = std::atan2 (-1.0f, -0.7f);
 
@@ -80,14 +81,15 @@ void glowStroke (Graphics& g, const Path& p, Colour c, float w, float glow)
 }
 }
 
-const BreatheEditor::KnobDef BreatheEditor::knobDefs[7] = {
+const BreatheEditor::KnobDef BreatheEditor::knobDefs[BreatheEditor::numKnobs] = {
     { Params::band[0], "LOW", 172, 205, 58, true, 0.0f },
     { Params::band[1], "LOW-MID", 356, 205, 58, true, 0.0f },
     { Params::band[2], "HIGH-MID", 824, 205, 58, true, 0.0f },
     { Params::band[3], "HIGH", 1008, 205, 58, true, 0.0f },
-    { Params::mix, "MIX", 112, 452, 24, false, 1.0f },
+    { Params::mix, "MIX", 974, 452, 24, false, 1.0f },
     { Params::age, "AGE", 208, 452, 24, false, 0.4f },
     { Params::output, "OUTPUT", 1066, 452, 24, false, 0.0f },
+    { Params::input, "IN", 112, 452, 24, false, 0.0f },
 };
 
 //==============================================================================
@@ -121,12 +123,13 @@ void BreatheEditor::saveSetting (const String& key, const String& v)
 
 BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
-    for (int k = 0; k < 7; ++k) knobParam[k] = proc.apvts.getParameter (knobDefs[k].id);
+    for (int k = 0; k < numKnobs; ++k) knobParam[k] = proc.apvts.getParameter (knobDefs[k].id);
     for (int i = 0; i < 3; ++i) xoParam[i] = proc.apvts.getParameter (Params::xover[i]);
     for (int b = 0; b < 4; ++b) { soloParam[b] = proc.apvts.getParameter (Params::solo[b]); muteParam[b] = proc.apvts.getParameter (Params::mute[b]); }
     ovsParam = proc.apvts.getParameter (Params::ovs);
     linParam = proc.apvts.getParameter (Params::lin);
     bypassParam = proc.apvts.getParameter (Params::bypass);
+    modeParam = proc.apvts.getParameter (Params::mode);
 
     const auto themeName = proc.apvts.state.getProperty ("theme", loadSetting ("theme", "Asphalt")).toString();
     look.setTheme (Theme::byName (themeName));
@@ -270,7 +273,7 @@ Point<float> BreatheEditor::smButton (int b, bool isMute) const
 
 int BreatheEditor::knobAt (Point<float> p) const
 {
-    for (int k = 0; k < 7; ++k)
+    for (int k = 0; k < numKnobs; ++k)
         if (p.getDistanceFrom ({ knobDefs[k].x, knobDefs[k].y }) < knobDefs[k].r + 8.0f) return k;
     return -1;
 }
@@ -293,7 +296,7 @@ Rectangle<float> BreatheEditor::knobArea (int k) const
 String BreatheEditor::hitKey (Point<float> p) const
 {
     const int k = knobAt (p);
-    if (k >= 0) return k < 4 ? Params::band[k] : k == 4 ? "mix" : k == 5 ? "age" : "output";
+    if (k >= 0) return k < 4 ? Params::band[k] : k == 4 ? "mix" : k == 5 ? "age" : k == 6 ? "output" : "in";
     const int b = bandAt (p);
     if (b >= 0)
     {
@@ -305,6 +308,8 @@ String BreatheEditor::hitKey (Point<float> p) const
     if (p.getDistanceFrom (bypassC) < 18.0f) return "bypass";
     if (Rectangle<float> (ovsC.x - 34, ovsC.y - 12, 68, 24).contains (p)) return "ovs";
     if (Rectangle<float> (linC.x - 26, linC.y - 12, 52, 24).contains (p)) return "lin";
+    if (Rectangle<float> (masterC.x - 30, masterC.y - 12, 58, 24).contains (p)) return "master";
+    if (Rectangle<float> (mixC.x - 22, mixC.y - 12, 44, 24).contains (p)) return "mixMode";
     if (tubeWin.expanded (12.0f).contains (p)) return "tube";
     if (Rectangle<float> (cx - 112, meterTop - 8, 34, meterBot - meterTop + 16).contains (p)) return "inMeter";
     if (Rectangle<float> (cx + 78, meterTop - 8, 34, meterBot - meterTop + 16).contains (p)) return "outMeter";
@@ -315,6 +320,7 @@ String BreatheEditor::getTooltip()
 {
     if (! helpOn || tour.isVisible() || welcome.isVisible() || dragKnob >= 0 || dragXo >= 0) return {};
     const auto key = hitKey (mouse);
+    if (key == "master" || key == "mixMode") return Help::tip ("mode", lang);
     return key.isEmpty() ? String() : Help::tip (key.toRawUTF8(), lang);
 }
 
@@ -335,6 +341,8 @@ Rectangle<float> BreatheEditor::tourTarget (const String& n)
     else if (n == "mix") r = Rectangle<float> (knobDefs[4].x - 40, knobDefs[4].y - 40, 80, 100);
     else if (n == "age") r = Rectangle<float> (knobDefs[5].x - 40, knobDefs[5].y - 40, 80, 100);
     else if (n == "output") r = Rectangle<float> (knobDefs[6].x - 40, knobDefs[6].y - 40, 80, 100);
+    else if (n == "in") r = Rectangle<float> (knobDefs[7].x - 40, knobDefs[7].y - 40, 80, 100);
+    else if (n == "mode") r = Rectangle<float> (masterC.x - 34, masterC.y - 14, 104, 28);
     else if (n == "bypass") r = Rectangle<float> (bypassC.x - 30, bypassC.y - 24, 60, 64);
     else if (n == "gear") r = Rectangle<float> (gearC.x - 24, gearC.y - 24, 48, 48);
     return r * s;
@@ -501,7 +509,7 @@ void BreatheEditor::buildPanel (float phys)
     }
 
     // knob scales, grooves and names
-    for (int k = 0; k < 7; ++k)
+    for (int k = 0; k < numKnobs; ++k)
     {
         const auto& d = knobDefs[k];
         const int n = d.big ? 11 : 7;
@@ -531,7 +539,7 @@ void BreatheEditor::buildPanel (float phys)
         else
             engrave (g, t, d.name, d.x, d.y + 46, uiFont (10.0f, true, 0.05f), Justification::centred, t.ink, 100);
     }
-    engrave (g, t, "BYPASS", bypassC.x, bypassC.y + 32, uiFont (9.0f, true, 0.05f), Justification::centred, t.mute, 100);
+    engrave (g, t, "BYPASS", bypassC.x, bypassC.y - 27, uiFont (9.0f, true, 0.05f), Justification::centred, t.mute, 100);
 
     // screen bezel
     {
@@ -591,6 +599,65 @@ void BreatheEditor::buildPanel (float phys)
 }
 
 //==============================================================================
+void BreatheEditor::buildKnobCache (int k, float px)
+{
+    // the parts of a knob that never move: contact shadow, side wall, top face, bevel and dome
+    const auto& d = knobDefs[k];
+    auto& c = knobCache[k];
+    const float r = d.r, dd = r * (d.big ? 0.24f : 0.28f), cap = r * 0.8f;
+    const float half = r + 14.0f;
+    const int sz = roundToInt (half * 2.0f * px);
+    c.base = Image (Image::ARGB, sz, roundToInt ((half * 2.0f + dd + 8.0f) * px), true);
+    c.px = px;
+    c.theme = look.theme().name;
+    Graphics g (c.base);
+    g.addTransform (AffineTransform::scale (px));
+    const float x = half, y = half;
+    {
+        Path sh;
+        sh.addEllipse (x + r * 0.08f - r * 1.02f, y + dd + r * 0.12f - r * 0.98f, r * 2.04f, r * 1.96f);
+        DropShadow (Colours::black.withAlpha (0.7f), roundToInt (r * 0.25f * px), {}).drawForPath (g, sh);
+    }
+    ColourGradient wall (Colour (0xff08080a), x - r, 0, Colour (0xff050506), x + r, 0, false);
+    wall.addColour (0.22, Colour (0xff3c3c43));
+    wall.addColour (0.42, Colour (0xff1c1c20));
+    g.setGradientFill (wall);
+    g.fillRect (x - r, y, r * 2.0f, dd);
+    g.fillEllipse (x - r, y + dd - r, r * 2.0f, r * 2.0f);
+    Path lower;
+    lower.addCentredArc (x, y + dd, r, r, 0.0f, pi * 0.5f, pi * 1.5f, true);
+    g.setColour (Colours::black.withAlpha (0.85f));
+    g.strokePath (lower, PathStrokeType (1.2f));
+    ColourGradient top (Colour (0xff4a4a52), x - r * 0.6f, y - r, Colour (0xff09090b), x + r * 0.6f, y + r, false);
+    top.addColour (0.5, Colour (0xff1b1b1f));
+    g.setGradientFill (top);
+    g.fillEllipse (x - r, y - r, r * 2, r * 2);
+    ColourGradient ch (Colours::white.withAlpha (0.55f), x, y - r, Colours::black.withAlpha (0.5f), x, y + r, false);
+    ch.addColour (0.5, Colours::white.withAlpha (0.05f));
+    g.setGradientFill (ch);
+    Path rim;
+    rim.addEllipse (x - r + 0.8f, y - r + 0.8f, r * 2 - 1.6f, r * 2 - 1.6f);
+    g.strokePath (rim, PathStrokeType (1.6f));
+    ColourGradient bev (Colours::black.withAlpha (0.65f), x, y - cap, Colours::white.withAlpha (0.18f), x, y + cap, false);
+    g.setGradientFill (bev);
+    g.fillEllipse (x - cap - 2, y - cap - 2, cap * 2 + 4, cap * 2 + 4);
+    ColourGradient dome (Colour (0xff62636c), x - cap * 0.32f, y - cap * 0.42f, Colour (0xff060607), x - cap * 0.32f + cap * 1.45f, y - cap * 0.42f, true);
+    dome.addColour (0.42, Colour (0xff222227));
+    g.setGradientFill (dome);
+    g.fillEllipse (x - cap, y - cap, cap * 2, cap * 2);
+
+    // soft glow of the engraved gorilla, white; tinted and rotated when drawn
+    if (d.big)
+    {
+        const float sc = cap * 1.02f / 534.0f;
+        const float gh = cap + 18.0f;
+        c.glow = Image (Image::ARGB, roundToInt (gh * 2.0f * px), roundToInt (gh * 2.0f * px), true);
+        Graphics gg (c.glow);
+        gg.addTransform (AffineTransform::scale (px));
+        DropShadow (Colours::white, roundToInt (12.0f * px), {}).drawForPath (gg, gorilla (gh, gh, sc, 0.0f));
+    }
+}
+
 void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
 {
     const auto& d = knobDefs[k];
@@ -600,7 +667,12 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
     const bool byp = bypassed();
     const float on = byp ? 0.25f : 1.0f, dim = (k < 4 && ! audible (k)) ? 0.35f : 1.0f;
     const float dd = r * (d.big ? 0.24f : 0.28f), cap = r * 0.8f;
-    const Colour acc = t.accent;
+    const bool bipolar = k == 6 || k == 7;
+    const Colour acc = k == 7 ? inColour() : t.accent;
+    const float px = scale() * physScale;
+    auto& c = knobCache[k];
+    if (! c.base.isValid() || c.px != px || c.theme != t.name)
+        buildKnobCache (k, px);
 
     // light ring
     const float R = r + (d.big ? 15.0f : 8.0f);
@@ -609,70 +681,48 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
         full.addCentredArc (x, y, R, R, 0.0f, -pi * 0.75f, pi * 0.75f, true);
         g.setColour (acc.withAlpha (0.10f));
         g.strokePath (full, PathStrokeType (d.big ? 4.0f : 2.4f, PathStrokeType::curved, PathStrokeType::rounded));
-        if (v > 0.002f)
+        const float from = bipolar ? 0.0f : -pi * 0.75f, to = bipolar ? (v - 0.5f) * pi * 1.5f : -pi * 0.75f + v * pi * 1.5f;
+        const float amt = bipolar ? (k == 7 ? 1.0f : std::abs (v - 0.5f) * 2.0f) : v;
+        if (k == 7)
+        {
+            // IN: the whole ring is the level light
+            glowStroke (g, full, acc.withAlpha (0.9f * on), 2.6f, 0.9f * on);
+        }
+        else if (std::abs (to - from) > 0.003f)
         {
             Path arc;
-            arc.addCentredArc (x, y, R, R, 0.0f, -pi * 0.75f, -pi * 0.75f + v * pi * 1.5f, true);
-            glowStroke (g, arc, acc.withAlpha ((0.4f + 0.6f * v) * on * dim), d.big ? 4.0f : 2.4f, (0.4f + 0.6f * v) * on * dim);
+            arc.addCentredArc (x, y, R, R, 0.0f, jmin (from, to), jmax (from, to), true);
+            const float gl = (0.4f + 0.6f * amt) * on * dim;
+            glowStroke (g, arc, acc.withAlpha (gl), d.big ? 4.0f : 2.4f, gl);
         }
     }
 
-    // contact shadow
+    // cached body
+    const float half = r + 14.0f;
+    g.setOpacity (1.0f);
+    g.drawImageTransformed (c.base, AffineTransform::scale (1.0f / px).translated (x - half, y - half));
+
+    // ridges on the wall: they travel with the rotation, the light stays
+    const int n = d.big ? 64 : 36;
+    for (int i = 0; i < n; ++i)
     {
-        Path sh;
-        sh.addEllipse (x + r * 0.08f - r * 1.02f, y + dd + r * 0.12f - r * 0.98f, r * 2.04f, r * 1.96f);
-        DropShadow (Colours::black.withAlpha (0.7f), roundToInt (r * 0.25f), {}).drawForPath (g, sh);
+        const float ph = a + (float) i * pi * 2.0f / (float) n, sn = std::sin (ph);
+        if (sn <= 0.02f) continue;
+        const float cc = std::cos (ph), px2 = x + cc * r, bri = jmax (0.0f, -cc * 0.8f + 0.35f) * sn;
+        const float sq = std::sqrt (jmax (0.0f, r * r - (px2 - x) * (px2 - x)));
+        g.setColour (Colours::white.withAlpha (0.04f + 0.38f * bri * bri));
+        g.drawLine (px2, y + sq, px2, y + dd + sq - 1.0f, (d.big ? 1.5f : 1.1f) * sn);
     }
-    // side wall
+    // fine radial brushing on the top ring (rotates)
+    const int m = d.big ? 90 : 40;
+    for (int i = 0; i < m; ++i)
     {
-        ColourGradient wall (Colour (0xff08080a), x - r, 0, Colour (0xff050506), x + r, 0, false);
-        wall.addColour (0.22, Colour (0xff3c3c43));
-        wall.addColour (0.42, Colour (0xff1c1c20));
-        g.setGradientFill (wall);
-        g.fillRect (x - r, y, r * 2.0f, dd);
-        g.fillEllipse (x - r, y + dd - r, r * 2.0f, r * 2.0f);
-        const int n = d.big ? 64 : 36;
-        for (int i = 0; i < n; ++i)
-        {
-            const float ph = a + (float) i * pi * 2.0f / (float) n, sn = std::sin (ph);
-            if (sn <= 0.02f) continue;
-            const float c = std::cos (ph), px = x + c * r, bri = jmax (0.0f, -c * 0.8f + 0.35f) * sn;
-            const float sq = std::sqrt (jmax (0.0f, r * r - (px - x) * (px - x)));
-            g.setColour (Colours::white.withAlpha (0.04f + 0.38f * bri * bri));
-            g.drawLine (px, y + sq, px, y + dd + sq - 1.0f, (d.big ? 1.5f : 1.1f) * sn);
-        }
-        Path lower;
-        lower.addCentredArc (x, y + dd, r, r, 0.0f, pi * 0.5f, pi * 1.5f, true);
-        g.setColour (Colours::black.withAlpha (0.85f));
-        g.strokePath (lower, PathStrokeType (1.2f));
-    }
-    // top face
-    {
-        ColourGradient top (Colour (0xff4a4a52), x - r * 0.6f, y - r, Colour (0xff09090b), x + r * 0.6f, y + r, false);
-        top.addColour (0.5, Colour (0xff1b1b1f));
-        g.setGradientFill (top);
-        g.fillEllipse (x - r, y - r, r * 2, r * 2);
-        const int m = d.big ? 90 : 40;
-        for (int i = 0; i < m; ++i)
-        {
-            const float ph = a + (float) i * pi * 2.0f / (float) m, b = jmax (0.0f, std::cos (ph - pi * 0.5f - lightAngle));
-            const float c = std::cos (ph - pi * 0.5f), s = std::sin (ph - pi * 0.5f);
-            g.setColour (Colours::white.withAlpha (0.015f + 0.16f * std::pow (b, 6.0f)));
-            g.drawLine (x + c * (cap + 2), y + s * (cap + 2), x + c * (r - 1.5f), y + s * (r - 1.5f), 0.9f);
-        }
-        ColourGradient ch (Colours::white.withAlpha (0.55f), x, y - r, Colours::black.withAlpha (0.5f), x, y + r, false);
-        ch.addColour (0.5, Colours::white.withAlpha (0.05f));
-        g.setGradientFill (ch);
-        Path rim;
-        rim.addEllipse (x - r + 0.8f, y - r + 0.8f, r * 2 - 1.6f, r * 2 - 1.6f);
-        g.strokePath (rim, PathStrokeType (1.6f));
-        ColourGradient bev (Colours::black.withAlpha (0.65f), x, y - cap, Colours::white.withAlpha (0.18f), x, y + cap, false);
-        g.setGradientFill (bev);
-        g.fillEllipse (x - cap - 2, y - cap - 2, cap * 2 + 4, cap * 2 + 4);
-        ColourGradient dome (Colour (0xff62636c), x - cap * 0.32f, y - cap * 0.42f, Colour (0xff060607), x - cap * 0.32f + cap * 1.45f, y - cap * 0.42f, true);
-        dome.addColour (0.42, Colour (0xff222227));
-        g.setGradientFill (dome);
-        g.fillEllipse (x - cap, y - cap, cap * 2, cap * 2);
+        const float ph = a + (float) i * pi * 2.0f / (float) m, b = jmax (0.0f, std::cos (ph - pi * 0.5f - lightAngle));
+        const float b6 = b * b * b; const float al = 0.015f + 0.16f * b6 * b6;
+        if (al < 0.02f) continue;
+        const float cc = std::cos (ph - pi * 0.5f), s = std::sin (ph - pi * 0.5f);
+        g.setColour (Colours::white.withAlpha (al));
+        g.drawLine (x + cc * (cap + 2), y + s * (cap + 2), x + cc * (r - 1.5f), y + s * (r - 1.5f), 0.9f);
     }
     // engraved gorilla: rotates with the knob, its lit and shadowed edges stay put
     if (d.big)
@@ -686,8 +736,12 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
         g.setColour (Colours::black.withAlpha (0.9f));  g.fillPath (gorilla (x - 0.5f, y - 0.7f, sc, a));
         const auto gp = gorilla (x, y, sc, a);
         g.setColour (Colour (0xff0a0a0d)); g.fillPath (gp);
-        if (lit > 0.05f)
-            DropShadow (t.logo.withAlpha (0.9f * lit), roundToInt (4.0f + 12.0f * lit), {}).drawForPath (g, gp);
+        if (lit > 0.05f && c.glow.isValid())
+        {
+            const float gh = cap + 18.0f;
+            g.setColour (t.logo.withAlpha (0.85f * lit));
+            g.drawImageTransformed (c.glow, AffineTransform::scale (1.0f / px).translated (-gh, -gh).rotated (a).translated (x, y), true);
+        }
         g.setColour (t.logo.withAlpha (0.08f + 0.92f * std::pow (lit, 0.85f)));
         g.fillPath (gp);
     }
@@ -695,8 +749,7 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
     {
         const auto rot = AffineTransform::rotation (a, x, y);
         const float inner = d.big ? cap * 0.8f : cap * 0.25f;
-        Line<float> l1 (x + 1, y - inner + 1, x + 1, y - r + 3);
-        Path p1; p1.addLineSegment (l1, 1.0f);
+        Path p1; p1.addLineSegment (Line<float> (x + 1, y - inner + 1, x + 1, y - r + 3), 1.0f);
         g.setColour (Colours::black.withAlpha (0.7f));
         g.strokePath (p1, PathStrokeType (d.big ? 4.5f : 3.0f, PathStrokeType::curved, PathStrokeType::rounded), rot);
         Path p2; p2.addLineSegment (Line<float> (x, y - inner, x, y - r + 4), 1.0f);
@@ -713,18 +766,19 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
         g.fillEllipse (hx - cap * 0.62f, hy - cap * 0.62f, cap * 1.24f, cap * 1.24f);
     }
     // the ring's glow reflected on the wall
-    if (v > 0.01f)
+    const float reflAmt = bipolar ? (k == 7 ? 0.8f : std::abs (v - 0.5f) * 2.0f) : v;
+    if (reflAmt > 0.01f)
     {
         Path refl;
         refl.addCentredArc (x, y + dd * 0.5f, r - 1.0f, r - 1.0f, 0.0f, pi * 0.6f, pi * 1.4f, true);
-        g.setColour (acc.withAlpha (0.28f * v * on * dim));
+        g.setColour (acc.withAlpha (0.28f * reflAmt * on * dim));
         g.strokePath (refl, PathStrokeType (dd * 0.7f));
     }
     // readout while touching
     if (hot)
     {
         String txt;
-        if (k == 6) { const float db = knobParam[6]->convertFrom0to1 (v); txt = (db > 0.05f ? "+" : "") + String (db, 1) + " dB"; }
+        if (bipolar) { const float db = knobParam[k]->convertFrom0to1 (v); txt = (db > 0.05f ? "+" : "") + String (db, 1) + " dB"; }
         else txt = String (roundToInt (v * 100.0f)) + "%";
         const Font f = uiFont (12.0f, true);
         const float w = GlyphArrangement::getStringWidth (f, txt) + 14.0f;
@@ -737,7 +791,16 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
     }
 }
 
-//==============================================================================
+// IN knob colour: pale when the iron gets too little, theme colour in the sweet spot, red when it is too hot
+Colour BreatheEditor::inColour() const
+{
+    const auto& t = look.theme();
+    const float lvl = shownInLevel;
+    const float on = jlimit (0.0f, 1.0f, (lvl + 30.0f) / 6.0f);       // -30 .. -24 dB RMS: wakes up
+    const float hot = jlimit (0.0f, 1.0f, (lvl + 12.0f) / 4.0f);      // -12 .. -8 dB RMS: turns red
+    return t.mute.withAlpha (0.6f).interpolatedWith (t.accent, on).interpolatedWith (Colour (0xffff3030), hot);
+}
+
 void BreatheEditor::drawJewel (Graphics& g, Point<float> c, float r, bool on, Colour col)
 {
     const float x = c.x, y = c.y, d = 6.0f;
@@ -877,7 +940,26 @@ void BreatheEditor::drawTube (Graphics& g)
             g.setColour (Colour (0xff040405));
             g.fillRect (sx, pt + 6, 5.0f, pb - pt - 12);
             Path fil; fil.addRectangle (sx + 1.2f, pt + 8, 2.6f, pb - pt - 16);
-            if (h > 0.02f) { DropShadow (acc.withAlpha (jmin (1.0f, h)), roundToInt (6 + 18 * h), {}).drawForPath (g, fil); DropShadow (hot (0.8f * h), roundToInt (3 + 6 * h), {}).drawForPath (g, fil); }
+            if (h > 0.02f)
+            {
+                const float gpx = scale() * physScale;
+                if (! filGlow.isValid() || filGlowPx != gpx)
+                {
+                    // one soft vertical glow, made once and reused every frame
+                    filGlowPx = gpx;
+                    const float gw = 40.0f, ghh = pb - pt + 40.0f;
+                    filGlow = Image (Image::ARGB, roundToInt (gw * gpx), roundToInt (ghh * gpx), true);
+                    Graphics gg (filGlow);
+                    gg.addTransform (AffineTransform::scale (gpx));
+                    Path bar; bar.addRectangle (gw * 0.5f - 1.3f, 20.0f, 2.6f, ghh - 40.0f);
+                    DropShadow (Colours::white, roundToInt (14.0f * gpx), {}).drawForPath (gg, bar);
+                }
+                const float gw = 40.0f;
+                g.setColour (acc.withAlpha (jmin (1.0f, h)));
+                g.drawImageTransformed (filGlow, AffineTransform::scale (1.0f / gpx).translated (sx + 2.5f - gw * 0.5f, pt - 20.0f), true);
+                g.setColour (hot (0.5f * h));
+                g.drawImageTransformed (filGlow, AffineTransform::scale (0.5f / gpx, 1.0f / gpx).translated (sx + 2.5f - gw * 0.25f, pt - 20.0f), true);
+            }
             g.setColour (hot (0.15f + 0.85f * h));
             g.fillPath (fil);
             g.setColour (Colour ((uint8) 150, 150, 160, 0.45f));
@@ -1087,8 +1169,8 @@ void BreatheEditor::drawScreen (Graphics& g)
             g.fillEllipse (r);
             if (act)
             {
-                Path ring; ring.addEllipse (r);
-                DropShadow (col.withAlpha (0.8f * a2), 10, {}).drawForPath (g, ring);
+                g.setColour (col.withAlpha (0.25f * a2));
+                g.drawEllipse (r.expanded (3.0f), 4.0f);
             }
             g.setColour (act ? col.withAlpha (a2) : Colours::white.withAlpha (0.45f * a2));
             g.drawEllipse (r, 1.2f);
@@ -1109,6 +1191,7 @@ void BreatheEditor::drawScreen (Graphics& g)
 void BreatheEditor::paint (Graphics& g)
 {
     const float phys = (float) g.getInternalContext().getPhysicalPixelScaleFactor();
+    physScale = phys;
     if (! panel.isValid() || panelScale != phys || panelTheme != look.theme().name
         || panel.getWidth() != roundToInt ((float) getWidth() * phys))
         buildPanel (phys);
@@ -1127,12 +1210,15 @@ void BreatheEditor::paint (Graphics& g)
         const int o = (int) ovsParam->convertFrom0to1 (ovsParam->getValue());
         drawSwitchText (g, "OVS " + Params::ovsNames[o], ovsC, o > 0);
         drawSwitchText (g, "LIN", linC, flag (linParam));
+        const bool mixOn = modeParam->getValue() > 0.5f;
+        drawSwitchText (g, "MASTER", masterC, ! mixOn);
+        drawSwitchText (g, "MIX", mixC, mixOn);
     }
     if (visible (scr.expanded (4)))
         drawScreen (g);
 
     const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
-    for (int k = 0; k < 7; ++k)
+    for (int k = 0; k < numKnobs; ++k)
     {
         if (! visible (knobArea (k))) continue;
         drawKnob (g, k, k == hoverKnob || k == dragKnob);
@@ -1221,14 +1307,15 @@ void BreatheEditor::tick (double dt)
 
     // knobs only when something about them changed
     String sig;
-    for (int k = 0; k < 7; ++k) sig << String (value (k), 4) << ",";
+    for (int k = 0; k < numKnobs; ++k) sig << String (value (k), 4) << ",";
     for (int i = 0; i < 3; ++i) sig << String (xoFreq (i), 1) << ",";
     for (int b = 0; b < 4; ++b) sig << (audible (b) ? "1" : "0");
-    sig << hoverKnob << dragKnob << (bypassed() ? "B" : "b") << look.theme().name;
+    shownInLevel += (proc.inLevelDb.load() - shownInLevel) * jmin (1.0f, fdt * 6.0f);
+    sig << hoverKnob << dragKnob << (bypassed() ? "B" : "b") << look.theme().name << inColour().toString();
     if (sig != knobSignature)
     {
         knobSignature = sig;
-        for (int k = 0; k < 7; ++k) repaint (toPixels (knobArea (k)));
+        for (int k = 0; k < numKnobs; ++k) repaint (toPixels (knobArea (k)));
         repaint (toPixels (Rectangle<float> (bypassC.x - 30, bypassC.y - 30, 60, 60)));
     }
 }
@@ -1256,7 +1343,7 @@ void BreatheEditor::mouseMove (const MouseEvent& e)
     MouseCursor c = MouseCursor::NormalCursor;
     if (hoverKnob >= 0) c = MouseCursor::UpDownResizeCursor;
     else if (xoAt (mouse) >= 0) c = MouseCursor::LeftRightResizeCursor;
-    else if (key == "solo" || key == "mute" || key == "ovs" || key == "lin" || key == "gear" || key == "bypass") c = MouseCursor::PointingHandCursor;
+    else if (key == "solo" || key == "mute" || key == "ovs" || key == "lin" || key == "gear" || key == "bypass" || key == "master" || key == "mixMode") c = MouseCursor::PointingHandCursor;
     setMouseCursor (c);
 }
 
@@ -1275,6 +1362,13 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
     if (key == "bypass") { toggle (bypassParam); return; }
     if (key == "lin") { toggle (linParam); return; }
     if (key == "ovs") { showOvsMenu(); return; }
+    if (key == "master" || key == "mixMode")
+    {
+        modeParam->beginChangeGesture();
+        modeParam->setValueNotifyingHost (key == "mixMode" ? 1.0f : 0.0f);
+        modeParam->endChangeGesture();
+        return;
+    }
     if (key == "solo" || key == "mute")
     {
         const int b = bandAt (mouse);
