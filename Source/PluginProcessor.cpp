@@ -490,9 +490,12 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         for (int ch = 0; ch < 2; ++ch)
         {
             // the channels differ a little (part tolerances) but never drift in level: only the harmonics shimmer
-            const float driveMul = (1.0f + B.tolDrive[ch] * (0.5f + age)) * (1.0f + 0.15f * B.sag);
-            const float biasMul = (1.0f + B.tolBias[ch]) * (1.0f + 0.5f * B.sag);
-            jitA[ch][(size_t) i] = life > 0.0f ? (0.1f + 0.3f * age) * life * B.shimmer[ch].next() : 0.0f;
+            // Drive (and so the level) is the same in both channels. The channels differ only in the tube bias:
+            // that colours the even harmonics, and its fast shimmer is the "breathing" of the spectrum.
+            const float driveMul = 1.0f + 0.15f * B.sag;
+            const float shim = life > 0.0f ? (0.3f + 0.7f * age) * life * B.shimmer[ch].next() : 0.0f;
+            const float biasMul = (1.0f + B.tolBias[ch] * (0.5f + age)) * (1.0f + 0.5f * B.sag) * (1.0f + jlimit (-0.9f, 2.0f, shim));
+            jitA[ch][(size_t) i] = 0.0f;
             gTubeA[ch][(size_t) i] = kTube * se * driveMul;
             bTubeA[ch][(size_t) i] = baseBias * biasMul;
             gTapeA[ch][(size_t) i] = kTape * se * driveMul;
@@ -502,33 +505,33 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     optoGr[b] = lastGr;
     liftDb[b] = lastLift;
 
-    // ---- non-linear stage, oversampled
+    // ---- non-linear stage, oversampled, in mid/side: whatever sits in the centre is treated identically
+    //      in both channels, so the stereo image can never shift, however hard the iron is driven.
+    auto linkedIron = [&B] (float* l, float* r, int count, int shift, const float* gT, const float* bT, const float* gP, const float* tX,
+                            const float* bT2)
+    {
+        auto& sm = B.sat[0];
+        auto& ss = B.sat[1];
+        for (int i = 0; i < count; ++i)
+        {
+            const int k = i >> shift;
+            const float mid = 0.5f * (l[i] + r[i]), side = 0.5f * (l[i] - r[i]);
+            const float m = sm.process (mid, gT[k], bT[k], gP[k], tX[k], 0.0f);
+            const float sd = ss.process (side, gT[k], bT2[k], gP[k], tX[k], 0.0f);
+            l[i] = m + sd;
+            r[i] = m - sd;
+        }
+    };
     auto blk = dsp::AudioBlock<float> (buf).getSubBlock (0, (size_t) n);
     if (auto* o = currentOs (b))
     {
         auto up = o->processSamplesUp (blk);
-        const int f = ovsIndex;
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            float* d = up.getChannelPointer ((size_t) ch);
-            auto& s = B.sat[ch];
-            for (int i = 0; i < (int) up.getNumSamples(); ++i)
-            {
-                const int k = i >> f;
-                d[i] = s.process (d[i], gTubeA[ch][(size_t) k], bTubeA[ch][(size_t) k], gTapeA[ch][(size_t) k], tXfA[ch][(size_t) k], jitA[ch][(size_t) k]);
-            }
-        }
+        linkedIron (up.getChannelPointer (0), up.getChannelPointer (1), (int) up.getNumSamples(), ovsIndex,
+                    gTubeA[0].data(), bTubeA[0].data(), gTapeA[0].data(), tXfA[0].data(), bTubeA[1].data());
         o->processSamplesDown (blk);
     }
     else
-    {
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            float* d = buf.getWritePointer (ch);
-            for (int i = 0; i < n; ++i)
-                d[i] = B.sat[ch].process (d[i], gTubeA[ch][(size_t) i], bTubeA[ch][(size_t) i], gTapeA[ch][(size_t) i], tXfA[ch][(size_t) i], jitA[ch][(size_t) i]);
-        }
-    }
+        linkedIron (d0, d1, n, 0, gTubeA[0].data(), bTubeA[0].data(), gTapeA[0].data(), tXfA[0].data(), bTubeA[1].data());
 
     // ---- level after the iron stays where it was, IN gain is taken back,
     //      DC blocker (bias makes a little DC), then cross-fade with the untouched band
@@ -543,8 +546,9 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     {
         float* d = buf.getWritePointer (ch);
         const float* dl = ch == 0 ? dl0 : dl1;
-        // each channel keeps its own level after the iron
-        const float sgT = B.pPost[ch] > 1.0e-10 ? jlimit (0.5f, 2.0f, (float) std::sqrt (B.pPre[ch] / B.pPost[ch])) : 1.0f;
+        // linked: one make-up gain for both channels, so left and right never drift apart
+        const double post = B.pPost[0] + B.pPost[1], pre = B.pPre[0] + B.pPre[1];
+        const float sgT = post > 1.0e-10 ? jlimit (0.5f, 2.0f, (float) std::sqrt (pre / post)) : 1.0f;
         float act = B.act, sg = B.satGain[ch];
         for (int i = 0; i < n; ++i)
         {

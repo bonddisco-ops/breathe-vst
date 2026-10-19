@@ -374,6 +374,32 @@ int main (int argc, char** argv)
         check (worst - base < 0.6f, "channels keep their level, only the harmonics shimmer");
     }
 
+    // ---------------------------------------------------------------- different music left and right, hot: same transfer in both channels
+    for (int lin = 1; lin >= 0; --lin)
+    {
+        defaults (p, lin, 2);
+        for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 0.8f);
+        setP (p, Params::input, 15.0f); setP (p, Params::age, 1.0f);
+        prepare (p);
+        Random rl (5), rr (6);
+        AudioBuffer<float> in (2, (int) SR * 4);
+        float bl = 0, br = 0;
+        for (int i = 0; i < in.getNumSamples(); ++i)
+        {
+            const double t = i / SR;
+            const float probe = 0.05f * (float) std::sin (2 * MathConstants<double>::pi * 1000.0 * t);
+            bl += 0.02f * (rl.nextFloat() * 2 - 1 - bl * 0.02f); br += 0.02f * (rr.nextFloat() * 2 - 1 - br * 0.02f);   // different rumbly "music"
+            const float kickL = (float) std::exp (-std::fmod (t, 0.5) * 8.0) * 0.4f * (float) std::sin (2 * MathConstants<double>::pi * 55 * t);
+            in.setSample (0, i, probe + 0.3f * bl + kickL);
+            in.setSample (1, i, probe + 0.3f * br + 0.3f * (rr.nextFloat() * 2 - 1));
+        }
+        auto out = run (p, in);
+        const float gl = harmonic (out, 0, 96000, 96000, 1000.0f), gr = harmonic (out, 1, 96000, 96000, 1000.0f);
+        const float d = std::abs (Decibels::gainToDecibels (gl / gr));
+        std::cout << "== different music in L and R, IN +15, AGE full (" << (lin ? "LIN" : "analog") << "): probe tone L/R difference " << d << " dB\n";
+        check (d < 0.5f, "linked: both channels treat the same tone the same way");
+    }
+
     // ---------------------------------------------------------------- bypass keeps latency
     {
         defaults (p, true, 2);
