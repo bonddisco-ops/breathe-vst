@@ -41,6 +41,10 @@ public:
     std::atomic<float> optoGr[4] {}, liftDb[4] {};       // what the band dynamics do right now (dB)
     std::atomic<float> drive { 0.0f };                    // output envelope, 0..1
     std::atomic<float> inLevelDb { -100.0f };             // RMS after the IN knob: what the "iron" gets
+    std::atomic<float> liftRel[4] {}, thrDb[4] {};        // Advanced screen: band level vs its average (dB), opto threshold (dB RMS)
+    std::atomic<int> scopeBand { -1 };                    // band the Advanced scope looks at (-1 = none)
+    juce::AbstractFifo bandFifo { 1 << 17 };              // pairs: band before / after processing (mono)
+    std::vector<float> bandData = std::vector<float> (1 << 17, 0.0f);
     juce::AbstractFifo scopeFifo { 32768 };
     std::vector<float> scopeData = std::vector<float> (32768, 0.0f);
     double currentRate() const { return sampleRate; }
@@ -59,6 +63,8 @@ private:
     std::atomic<float>* muteP[4] {};
     std::atomic<float> *mixP = nullptr, *ageP = nullptr, *outP = nullptr, *inP = nullptr, *ovsP = nullptr,
                        *linP = nullptr, *bypassP = nullptr, *modeP = nullptr;
+    std::atomic<float>* advEqP[4] {}, *advDriveP[4] {}, *advDynP[4] {};
+    float trimEq[4] {}, trimDrive[4] {}, trimDyn[4] {};      // smoothed, -1..+1
 
     // ---- configuration that changes the latency
     int ovsIndex = -1;
@@ -96,7 +102,7 @@ private:
     } bands[4];
 
     juce::AudioBuffer<float> bandBuf[4], dryBuf, wetBuf, apBuf;
-    std::vector<float> gTubeA[2], bTubeA[2], gTapeA[2], tXfA[2], jitA[2], inGainA;
+    std::vector<float> gTubeA[2], bTubeA[2], gTapeA[2], tXfA[2], jitA[2], inGainA, scopePre;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> rawDelay { 1 << 16 }, apDelay { 1 << 16 }, bandDelay[4];
 
     // ---- post EQ for minimum-phase mode

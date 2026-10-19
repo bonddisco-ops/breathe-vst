@@ -25,6 +25,7 @@ void defaults (BreatheProcessor& p, bool lin, int ovs)
     setP (p, Params::mix, 1); setP (p, Params::age, 0.0f); setP (p, Params::output, 0);
     setP (p, Params::lin, lin ? 1.0f : 0.0f); setP (p, Params::ovs, (float) ovs); setP (p, Params::bypass, 0);
     setP (p, Params::input, 0); setP (p, Params::mode, 0);
+    for (int b = 0; b < 4; ++b) { setP (p, Params::advEq[b], 0); setP (p, Params::advDrive[b], 0); setP (p, Params::advDyn[b], 0); }
 }
 
 AudioBuffer<float> run (BreatheProcessor& p, const AudioBuffer<float>& in, int bs = BS)
@@ -157,6 +158,61 @@ int main (int argc, char** argv)
                 for (int i = 0; i < o2.getNumSamples(); ++i) diff = jmax (diff, (double) std::abs (o2.getSample (0, i) - o2.getSample (1, i)));
                 std::cout << (mode ? "MIX " : "MASTER ") << (lin ? "LIN" : "analog") << ": identical L/R in, IN +15, AGE full -> max L-R difference out " << diff << "\n";
             }
+        return 0;
+    }
+
+    if (argc > 2 && String (argv[2]) == "shots")
+    {
+        BreatheProcessor q;
+        q.setPlayConfigDetails (2, 2, SR, BS);
+        defaults (q, true, 1);
+        setP (q, Params::band[0], 0.6f); setP (q, Params::band[1], 0.5f); setP (q, Params::band[2], 0.55f); setP (q, Params::band[3], 0.85f);
+        setP (q, Params::advEq[0], 40.5f); setP (q, Params::advDrive[0], 62.0f); setP (q, Params::advDyn[0], 18.5f);
+        setP (q, Params::advDrive[1], -30.0f); setP (q, Params::advEq[2], 25.5f); setP (q, Params::advDyn[2], 47.5f);
+        setP (q, Params::advEq[3], 60.0f); setP (q, Params::advDrive[3], 9.5f); setP (q, Params::advDyn[3], 35.0f);
+        q.prepareToPlay (SR, BS);
+        // something with dynamics: a kick every half second, a bass line, hats and a quiet room
+        AudioBuffer<float> in (2, (int) (SR * 0.5));
+        Random rr (3);
+        float hp = 0.0f;
+        for (int i = 0; i < in.getNumSamples(); ++i)
+        {
+            const double t = i / SR;
+            const float kick = (float) (std::exp (-t * 9.0) * std::sin (2 * MathConstants<double>::pi * (50.0 + 80.0 * std::exp (-t * 30.0)) * t)) * 0.7f;
+            const float bass = 0.18f * (float) std::sin (2 * MathConstants<double>::pi * 55.0 * t);
+            const float w = rr.nextFloat() * 2 - 1;
+            const float hat = (w - hp) * (float) std::exp (-std::fmod (t, 0.125) * 40.0) * 0.12f; hp = w;
+            const float room = (rr.nextFloat() * 2 - 1) * 0.004f;
+            for (int ch = 0; ch < 2; ++ch) in.setSample (ch, i, kick + bass + hat + room + 0.05f * (float) std::sin (2 * MathConstants<double>::pi * 440.0 * t));
+        }
+        struct Shot { const char* file; int view; int band; bool about; };
+        for (auto sh : { Shot { "adv_eq.png", 0, 0, false }, Shot { "adv_comp.png", 1, 0, false }, Shot { "adv_lift.png", 1, 3, false }, Shot { "about.png", 0, 0, true } })
+        {
+            q.apvts.state.setProperty ("theme", "Asphalt", nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->applyTheme ("Asphalt");
+            ed->setAdvancedOpen (true);
+            ed->setSize (BreatheEditor::baseW, BreatheEditor::baseH + BreatheEditor::stripH + BreatheEditor::advH);
+            ed->hideWelcomeForTest();
+            if (sh.view == 1) ed->showDynForTest (sh.band);
+            for (int i = 0; i < 12; ++i) { auto blk = run (q, in); ed->renderForTest (0.5); }
+            if (sh.about) ed->showAboutForTest();
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+            File f = outDir.getChildFile (sh.file);
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        }
+        {
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->setAdvancedOpen (false);
+            ed->setSize (BreatheEditor::baseW, BreatheEditor::baseH + BreatheEditor::stripH);
+            ed->hideWelcomeForTest();
+            for (int i = 0; i < 6; ++i) { auto blk = run (q, in); ed->renderForTest (0.5); }
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+            File f = outDir.getChildFile ("closed.png");
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        }
         return 0;
     }
 
@@ -473,6 +529,95 @@ int main (int argc, char** argv)
             check (a1[2] < a0[2] + 6.0f || a1[2] < -100.0f, "AGE adds nothing at 60 Hz");
             if (f > 5000) check (a1[0] > a0[0] + 20.0f, "AGE makes the top shiver");
         }
+    }
+
+    // ---------------------------------------------------------------- Advanced trims
+    {
+        defaults (p, true, 2);
+        for (int b = 0; b < 4; ++b) { setP (p, Params::advEq[b], 100); setP (p, Params::advDrive[b], 100); setP (p, Params::advDyn[b], 100); }
+        prepare (p);
+        const int lat = p.getLatencySamples();
+        auto in = noise (1.0f, 0.5f, 5);
+        auto out = run (p, in);
+        double err = 0;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = lat; i < in.getNumSamples(); ++i)
+                err = jmax (err, (double) std::abs (out.getSample (ch, i) - in.getSample (ch, i - lat)));
+        std::cout << "== Advanced at +100 % with every big knob at zero: max error " << err << "\n";
+        check (err == 0.0, "Advanced does nothing while the big knobs sit at zero");
+
+        auto curveAt = [&] (float trim, int mode, float f)
+        {
+            defaults (p, false, 1);
+            setP (p, Params::mode, (float) mode);
+            for (int b = 0; b < 4; ++b) { setP (p, Params::band[b], 1.0f); setP (p, Params::advEq[b], trim); setP (p, Params::advDrive[b], -100); setP (p, Params::advDyn[b], -100); }
+            prepare (p);
+            auto o = run (p, sine (f, 1.5f, 0.01f));
+            return Decibels::gainToDecibels (harmonic (o, 0, 48000, 19200, f) / 0.01f);
+        };
+        for (int mode = 0; mode < 2; ++mode)
+        {
+            const float m100 = curveAt (-100, mode, 30), z = curveAt (0, mode, 30), p100 = curveAt (100, mode, 30);
+            const float a100 = curveAt (100, mode, 11000);
+            std::cout << "== EQ trim " << (mode ? "MIX" : "MASTER") << ": 30 Hz at -100/0/+100 % = " << String (m100, 2) << " / " << String (z, 2) << " / " << String (p100, 2)
+                      << " dB, 11 kHz at +100 % = " << String (a100, 2) << " dB\n";
+            check (std::abs (m100) < 0.3f && p100 > 10.0f && p100 > z + 3.0f, "EQ trim runs from no curve to a real Pultec");
+        }
+
+        auto thdAt = [&] (float trim, float& lvl)
+        {
+            defaults (p, true, 2);
+            setP (p, Params::band[1], 1.0f); setP (p, Params::advDrive[1], trim);
+            prepare (p);
+            auto o = run (p, sine (350.0f, 2.0f, 0.178f));
+            const float h1 = harmonic (o, 0, 72000, 19200, 350), h2 = harmonic (o, 0, 72000, 19200, 700), h3 = harmonic (o, 0, 72000, 19200, 1050);
+            lvl = Decibels::gainToDecibels (h1 / 0.178f);
+            return std::sqrt (h2 * h2 + h3 * h3) / h1 * 100.0f;
+        };
+        float l0, l1, l2;
+        const float t0 = thdAt (-100, l0), t1 = thdAt (0, l1), t2 = thdAt (100, l2);
+        std::cout << "== DRIVE trim LOW-MID: THD " << String (t0, 2) << " / " << String (t1, 2) << " / " << String (t2, 2) << " %, level " << String (l0, 2) << " / " << String (l1, 2) << " / " << String (l2, 2) << " dB\n";
+        check (t0 < 0.05f && t2 > t1 * 2.5f && std::abs (l2 - l1) < 1.5f, "DRIVE trim runs from clean to much hotter at the same level");
+
+        // COMP trim = threshold: + squeezes more, - less; attack/release stay optical
+        auto grWith = [&] (float trim)
+        {
+            defaults (p, false, 1);
+            setP (p, Params::band[0], 1.0f); setP (p, Params::advDyn[0], trim);
+            prepare (p);
+            AudioBuffer<float> in (2, (int) (SR * 4));
+            for (int i = 0; i < in.getNumSamples(); ++i)
+            {
+                const double t = i / SR, ph = std::fmod (t, 0.5);
+                const float v = (float) ((0.08 + 0.5 * std::exp (-ph * 8.0)) * std::sin (2 * MathConstants<double>::pi * 55.0 * t));
+                in.setSample (0, i, v); in.setSample (1, i, v);
+            }
+            float worst = 0.0f;
+            MidiBuffer midi;
+            for (int pos = 0; pos < in.getNumSamples(); pos += BS)
+            {
+                AudioBuffer<float> blk (in.getArrayOfWritePointers(), 2, pos, jmin (BS, in.getNumSamples() - pos));
+                p.processBlock (blk, midi);
+                if (pos > SR * 2) worst = jmax (worst, p.optoGr[0].load());
+            }
+            return worst;
+        };
+        const float gm = grWith (-100), g0 = grWith (0), gp = grWith (100);
+        std::cout << "== COMP trim on LOW (MASTER): peak gain reduction " << String (gm, 2) << " / " << String (g0, 2) << " / " << String (gp, 2) << " dB\n";
+        check (gm < g0 && gp > g0 * 1.3f, "COMP trim moves the threshold: + squeezes more, - less");
+
+        defaults (p, true, 2);
+        for (int b = 0; b < 4; ++b) { setP (p, Params::band[b], 1.0f); setP (p, Params::advEq[b], 100); setP (p, Params::advDrive[b], 100); setP (p, Params::advDyn[b], 100); }
+        setP (p, Params::mode, 1);
+        prepare (p);
+        auto mono = noise (3.0f, 0.3f, 9);
+        for (int i = 0; i < mono.getNumSamples(); ++i) mono.setSample (1, i, mono.getSample (0, i));
+        auto o = run (p, mono);
+        double d = 0;
+        bool finite = true;
+        for (int i = 0; i < o.getNumSamples(); ++i) { d = jmax (d, (double) std::abs (o.getSample (0, i) - o.getSample (1, i))); finite &= std::isfinite (o.getSample (0, i)); }
+        std::cout << "== everything at +100 %, mono in: L-R difference " << d << "\n";
+        check (finite && d < 1.0e-6, "mono stays mono with Advanced slammed");
     }
 
     // ---------------------------------------------------------------- bypass keeps latency

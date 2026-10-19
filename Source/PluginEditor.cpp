@@ -87,7 +87,7 @@ const BreatheEditor::KnobDef BreatheEditor::knobDefs[BreatheEditor::numKnobs] = 
     { Params::band[2], "HIGH-MID", 824, 205, 58, true, 0.0f },
     { Params::band[3], "HIGH", 1008, 205, 58, true, 0.0f },
     { Params::mix, "MIX", 974, 452, 24, false, 1.0f },
-    { Params::age, "AGE", 208, 452, 24, false, 0.4f },
+    { Params::age, "AGE", 208, 452, 24, false, 0.0f },
     { Params::output, "OUTPUT", 1066, 452, 24, false, 0.0f },
     { Params::input, "IN", 112, 452, 24, false, 0.0f },
 };
@@ -130,6 +130,13 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
     linParam = proc.apvts.getParameter (Params::lin);
     bypassParam = proc.apvts.getParameter (Params::bypass);
     modeParam = proc.apvts.getParameter (Params::mode);
+    for (int b = 0; b < 4; ++b)
+    {
+        advParam[b * 3 + 0] = proc.apvts.getParameter (Params::advEq[b]);
+        advParam[b * 3 + 1] = proc.apvts.getParameter (Params::advDrive[b]);
+        advParam[b * 3 + 2] = proc.apvts.getParameter (Params::advDyn[b]);
+    }
+    advOpen = (bool) proc.apvts.state.getProperty ("advOpen", false);
 
     const auto themeName = proc.apvts.state.getProperty ("theme", loadSetting ("theme", "Asphalt")).toString();
     look.setTheme (Theme::byName (themeName));
@@ -139,6 +146,7 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
 
     addChildComponent (tour);
     addChildComponent (welcome);
+    addChildComponent (about);
     tour.resolveTarget = [this] (const String& n) { return tourTarget (n); };
     tour.onFinish = [] { saveSetting ("tour", "never"); };
     welcome.onLanguage = [this] (Help::Lang l) { lang = l; saveSetting ("helpLang", l == Help::Lang::ru ? "ru" : "en"); applyHelp(); };
@@ -166,11 +174,10 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
 
     const int w = (int) proc.apvts.state.getProperty ("uiW", loadSetting ("w", String (baseW)).getIntValue());
     setResizable (true, true);
-    setResizeLimits (944, 448, 2360, 1120);
-    if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) baseW / (double) baseH);
+    applySizeLimits();
     ready = true;
     const int ww = jlimit (944, 2360, w);
-    setSize (ww, roundToInt ((float) ww * H / W));
+    setSize (ww, roundToInt ((float) ww * logicalH() / W));
 
     lastTick = Time::getMillisecondCounterHiRes() * 0.001;
     startTimerHz (40);
@@ -216,6 +223,7 @@ void BreatheEditor::resized()
     }
     tour.setBounds (getLocalBounds());
     welcome.setBounds (getLocalBounds());
+    about.setBounds (getLocalBounds());
     if (tour.isVisible()) tour.resized();
     panel = {};
 }
@@ -295,6 +303,24 @@ Rectangle<float> BreatheEditor::knobArea (int k) const
 
 String BreatheEditor::hitKey (Point<float> p) const
 {
+    if (p.y >= H)
+    {
+        if (p.y >= stripY()) return Rectangle<float> (500, stripY() + 5, 180, 24).contains (p) ? "adv" : String();
+        const int a = advKnobAt (p);
+        if (a >= 0) return a % 3 == 0 ? "advEq" : a % 3 == 1 ? "advDrive" : a / 3 < 2 ? "advComp" : "advLift";
+        if (Rectangle<float> (530, H + 268, 120, 30).contains (p)) return "advReset";
+        if (Rectangle<float> (968, H + 22, 34, 18).contains (p)) return "tabEq";
+        if (Rectangle<float> (1006, H + 22, 34, 18).contains (p)) return "tabDyn";
+        if (advView == 1 && dynBand < 2 && Rectangle<float> (318, H + 46, 722, 168).contains (p))
+        {
+            const float amp = Decibels::decibelsToGain (proc.thrDb[dynBand].load()) * 1.414f;
+            const float off = jmin (71.0f, amp / waveScale * 71.0f);
+            if (std::abs (std::abs (p.y - (H + 123.0f)) - off) < 7.0f) return "advThr";
+        }
+        if (Rectangle<float> (58, H + 16, 1064, 212).contains (p)) return "advScreen";
+        return {};
+    }
+    if (Rectangle<float> (60, 14, 250, 70).contains (p)) return "logo";
     const int k = knobAt (p);
     if (k >= 0) return k < 4 ? Params::band[k] : k == 4 ? "mix" : k == 5 ? "age" : k == 6 ? "output" : "in";
     const int b = bandAt (p);
@@ -321,6 +347,7 @@ String BreatheEditor::getTooltip()
     if (! helpOn || tour.isVisible() || welcome.isVisible() || dragKnob >= 0 || dragXo >= 0) return {};
     const auto key = hitKey (mouse);
     if (key == "master" || key == "mixMode") return Help::tip ("mode", lang);
+    if (key == "tabEq" || key == "tabDyn" || key == "advThr") return Help::tip (key == "advThr" ? "advComp" : "advScreen", lang);
     return key.isEmpty() ? String() : Help::tip (key.toRawUTF8(), lang);
 }
 
@@ -345,6 +372,7 @@ Rectangle<float> BreatheEditor::tourTarget (const String& n)
     else if (n == "mode") r = Rectangle<float> (masterC.x - 34, masterC.y - 14, 104, 28);
     else if (n == "bypass") r = Rectangle<float> (bypassC.x - 30, bypassC.y - 24, 60, 64);
     else if (n == "gear") r = Rectangle<float> (gearC.x - 24, gearC.y - 24, 48, 48);
+    else if (n == "adv") r = Rectangle<float> (492, stripY() - 1, 196, 36);
     return r * s;
 }
 
@@ -596,6 +624,7 @@ void BreatheEditor::buildPanel (float phys)
         g.setColour (Colour (0xff09090b));
         g.fillPath (gp, AffineTransform::translation (x, y));
     }
+    drawAdvStatic (g);
 }
 
 //==============================================================================
@@ -1232,6 +1261,10 @@ void BreatheEditor::paint (Graphics& g)
     }
     if (visible (Rectangle<float> (bypassC.x - 24, bypassC.y - 24, 48, 48)))
         drawJewel (g, bypassC, 12.0f, bypassed(), Colour (0xffff3a3a));
+    if (advOpen && visible (Rectangle<float> (0, H, W, (float) advH)))
+        drawAdvanced (g);
+    if (visible (Rectangle<float> (0, stripY(), W, (float) stripH)))
+        drawStrip (g);
 }
 
 //==============================================================================
@@ -1305,6 +1338,41 @@ void BreatheEditor::tick (double dt)
     repaint (toPixels (Rectangle<float> (cx - 142, 78, 284, 302)));
     repaint (toPixels (scr.expanded (6)));
 
+    // Advanced panel: which screen, its scope data, repaint
+    if (advView == 1 && ! dynSticky && dragAdv < 0 && ! dragThr && clock > dynHoldUntil) advView = 0;
+    proc.scopeBand = (advOpen && advView == 1) ? dynBand : -1;
+    if (advOpen)
+    {
+        readBandScope();
+        if (advView == 1 && dynBand < 2)
+        {
+            const int cols = (int) waveHi.size(), total = (int) jmin (130000.0, proc.currentRate() * 2.0), per = jmax (1, total / cols);
+            float mx = 1.0e-6f;
+            for (int c = 0; c < cols; ++c)
+            {
+                float a = 0.0f, z = 0.0f;
+                const int st = bandPos - total + c * per;
+                for (int i = 0; i < per; ++i)
+                {
+                    const float v = bandPost[(size_t) ((st + i) & ((1 << 17) - 1))];
+                    a = jmax (a, v); z = jmin (z, v);
+                }
+                waveHi[(size_t) c] = a; waveLo[(size_t) c] = z;
+                mx = jmax (mx, jmax (a, -z));
+            }
+            const float thrAmp = Decibels::decibelsToGain (proc.thrDb[dynBand].load()) * 1.414f;
+            const float target = jmax (mx * 1.1f, thrAmp * 1.3f, 1.0e-4f);
+            waveScale += (target - waveScale) * (target > waveScale ? 0.5f : 0.04f);
+        }
+        const float gr = dynBand < 2 ? proc.optoGr[dynBand].load() : 0.0f;
+        grShown += (gr - grShown) * jmin (1.0f, fdt * 12.0f);
+        liftShown += ((dynBand >= 2 ? proc.liftDb[dynBand].load() : 0.0f) - liftShown) * jmin (1.0f, fdt * 10.0f);
+        grHist[(size_t) grPos] = grShown;
+        grPos = (grPos + 1) % (int) grHist.size();
+        repaint (toPixels (Rectangle<float> (0, H, W, (float) advH)));
+    }
+    repaint (toPixels (Rectangle<float> (0, stripY(), W, (float) stripH)));
+
     // knobs only when something about them changed
     String sig;
     for (int k = 0; k < numKnobs; ++k) sig << String (value (k), 4) << ",";
@@ -1343,12 +1411,17 @@ void BreatheEditor::mouseMove (const MouseEvent& e)
     MouseCursor c = MouseCursor::NormalCursor;
     if (hoverKnob >= 0) c = MouseCursor::UpDownResizeCursor;
     else if (xoAt (mouse) >= 0) c = MouseCursor::LeftRightResizeCursor;
-    else if (key == "solo" || key == "mute" || key == "ovs" || key == "lin" || key == "gear" || key == "bypass" || key == "master" || key == "mixMode") c = MouseCursor::PointingHandCursor;
+    else if (key == "solo" || key == "mute" || key == "ovs" || key == "lin" || key == "gear" || key == "bypass" || key == "master" || key == "mixMode"
+             || key == "logo" || key == "adv" || key == "advReset" || key == "tabEq" || key == "tabDyn") c = MouseCursor::PointingHandCursor;
+    else if (key == "advThr") c = MouseCursor::UpDownResizeCursor;
+    else if (key.startsWith ("adv") && advKnobAt (mouse) >= 0 && bandOn (advKnobAt (mouse) / 3)) c = MouseCursor::UpDownResizeCursor;
+    hoverAdv = advKnobAt (mouse);
     setMouseCursor (c);
 }
 
 void BreatheEditor::mouseExit (const MouseEvent&)
 {
+    hoverAdv = -1;
     hoverKnob = -1;
     hoverBand = -1;
     mouse = { -100, -100 };
@@ -1358,6 +1431,38 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
 {
     mouse = toLogical (e.position);
     const auto key = hitKey (mouse);
+    if (key == "logo") { showAbout(); return; }
+    if (key == "adv") { setAdvancedOpen (! advOpen); return; }
+    if (key == "advReset")
+    {
+        for (auto* p : advParam) { p->beginChangeGesture(); p->setValueNotifyingHost (p->convertTo0to1 (0.0f)); p->endChangeGesture(); }
+        return;
+    }
+    if (key == "tabEq") { advView = 0; dynSticky = false; return; }
+    if (key == "tabDyn") { advView = 1; dynSticky = true; return; }
+    if (key == "advThr" && bandOn (dynBand))
+    {
+        dragThr = true;
+        dragAdvStart = advParam[dynBand * 3 + 2]->convertFrom0to1 (advParam[dynBand * 3 + 2]->getValue());
+        dragAdvAccum = 0.0f;
+        dragLastY = e.position.y;
+        advParam[dynBand * 3 + 2]->beginChangeGesture();
+        return;
+    }
+    {
+        const int a = advKnobAt (mouse);
+        if (a >= 0)
+        {
+            if (! bandOn (a / 3)) return;
+            dragAdv = a;
+            touchAdv (a);
+            dragAdvStart = advParam[a]->convertFrom0to1 (advParam[a]->getValue());
+            dragAdvAccum = 0.0f;
+            dragLastY = e.position.y;
+            advParam[a]->beginChangeGesture();
+            return;
+        }
+    }
     if (key == "gear") { showGearMenu(); return; }
     if (key == "bypass") { toggle (bypassParam); return; }
     if (key == "lin") { toggle (linParam); return; }
@@ -1392,6 +1497,23 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
 void BreatheEditor::mouseDrag (const MouseEvent& e)
 {
     mouse = toLogical (e.position);
+    if (dragAdv >= 0 || dragThr)
+    {
+        const float dy = (dragLastY - e.position.y) / scale();
+        dragLastY = e.position.y;
+        if (dragAdv >= 0)
+        {
+            dragAdvAccum += dy * (e.mods.isShiftDown() ? 0.1f : 1.0f);         // % per pixel
+            setAdvValue (dragAdv, dragAdvStart + dragAdvAccum);
+        }
+        else
+        {
+            // threshold line: up = higher threshold = less compression. 1 px = 0.25 dB (Shift: 0.025 dB)
+            dragAdvAccum -= dy * (e.mods.isShiftDown() ? 0.025f : 0.25f) / 12.0f * 100.0f;
+            setAdvValue (dynBand * 3 + 2, dragAdvStart + dragAdvAccum);
+        }
+        return;
+    }
     if (dragXo >= 0)
     {
         const float lo = dragXo > 0 ? xoFreq (dragXo - 1) * 1.3f : 0.0f, hi = dragXo < 2 ? xoFreq (dragXo + 1) / 1.3f : 1.0e6f;
@@ -1410,6 +1532,11 @@ void BreatheEditor::mouseDrag (const MouseEvent& e)
 
 void BreatheEditor::mouseUp (const MouseEvent&)
 {
+    if (dragAdv >= 0) advParam[dragAdv]->endChangeGesture();
+    if (dragThr) advParam[dynBand * 3 + 2]->endChangeGesture();
+    if (dragAdv >= 0 || dragThr) dynHoldUntil = clock + 2.5;
+    dragAdv = -1;
+    dragThr = false;
     if (dragXo >= 0) xoParam[dragXo]->endChangeGesture();
     if (dragKnob >= 0) knobParam[dragKnob]->endChangeGesture();
     dragXo = dragKnob = -1;
@@ -1426,6 +1553,14 @@ void BreatheEditor::mouseDoubleClick (const MouseEvent& e)
         xoParam[xi]->endChangeGesture();
         return;
     }
+    const int a = advKnobAt (mouse);
+    if (a >= 0 && bandOn (a / 3))
+    {
+        advParam[a]->beginChangeGesture();
+        setAdvValue (a, 0.0f);
+        advParam[a]->endChangeGesture();
+        return;
+    }
     const int k = knobAt (mouse);
     if (k >= 0)
     {
@@ -1437,6 +1572,23 @@ void BreatheEditor::mouseDoubleClick (const MouseEvent& e)
 
 void BreatheEditor::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 {
+    {
+        const int a = advKnobAt (toLogical (e.position));
+        if (a >= 0)
+        {
+            if (! bandOn (a / 3) || w.deltaY == 0.0f) return;
+            touchAdv (a);
+            dynHoldUntil = clock + 2.5;
+            const bool fine = e.mods.isShiftDown();
+            float d = w.deltaY * (fine ? 1.0f : 20.0f);
+            if (std::abs (d) < 0.1f) d = d > 0 ? 0.1f : -0.1f;
+            auto* p = advParam[a];
+            p->beginChangeGesture();
+            setAdvValue (a, p->convertFrom0to1 (p->getValue()) + d);
+            p->endChangeGesture();
+            return;
+        }
+    }
     const int k = knobAt (toLogical (e.position));
     if (k < 0) return;
     auto* p = knobParam[k];
@@ -1475,8 +1627,684 @@ void BreatheEditor::showGearMenu()
     m.addSubMenu ("Help language", langs);
     m.addSeparator();
     m.addItem ("Start tour", [this] { tour.start (lang); });
-    m.addItem ("Reset window size", [this] { setSize (baseW, baseH); });
+    m.addItem ("Reset window size", [this] { setSize (baseW, roundToInt (logicalH())); });
     m.addSeparator();
-    m.addItem (String ("Breathe ") + JucePlugin_VersionString + " by Primal Rage Lab", false, false, nullptr);
+    m.addItem ("About Breathe", [this] { showAbout(); });
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (toPixels (Rectangle<float> (gearC.x - 18, gearC.y - 18, 36, 36)))));
+}
+
+//==============================================================================
+// Advanced panel
+namespace
+{
+    const float advGroupX[4] { 172.0f, 356.0f, 824.0f, 1008.0f };
+    const char* const advKindName[3] { "EQ", "DRIVE", "" };
+    const Rectangle<float> advFrame { 58.0f, H + 16.0f, 1064.0f, 212.0f };
+    const Rectangle<float> advScreenR { 70.0f, H + 46.0f, 1040.0f, 168.0f };
+    constexpr float compCy = H + 46.0f + 77.0f, compA = 71.0f;     // comp scope: centre line and half height
+
+    String trimText (float v)
+    {
+        const float r = std::round (v * 10.0f) / 10.0f;
+        return (r > 0.0f ? "+" : r < 0.0f ? "-" : "") + String (std::abs (r), 1) + "%";
+    }
+}
+
+void BreatheEditor::applySizeLimits()
+{
+    const float hl = logicalH();
+    setResizeLimits (944, roundToInt (944.0f * hl / W), 2360, roundToInt (2360.0f * hl / W));
+    if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) W / (double) hl);
+}
+
+void BreatheEditor::setAdvancedOpen (bool open)
+{
+    if (open == advOpen) return;
+    advOpen = open;
+    proc.apvts.state.setProperty ("advOpen", open, nullptr);
+    applySizeLimits();
+    setSize (getWidth(), roundToInt ((float) getWidth() * logicalH() / W));
+    panel = {};
+    repaint();
+}
+
+Point<float> BreatheEditor::advKnobPos (int i) const
+{
+    return { advGroupX[i / 3] + (float) (i % 3 - 1) * 54.0f, H + 300.0f };
+}
+
+int BreatheEditor::advKnobAt (Point<float> p) const
+{
+    if (! advOpen || p.y < H || p.y >= stripY()) return -1;
+    for (int i = 0; i < 12; ++i)
+        if (p.getDistanceFrom (advKnobPos (i)) < 24.0f) return i;
+    return -1;
+}
+
+bool BreatheEditor::bandOn (int b) const { return Dsp::isOn (knobParam[b]->convertFrom0to1 (knobParam[b]->getValue())); }
+
+bool BreatheEditor::advActive() const
+{
+    for (int b = 0; b < 4; ++b) if (bandOn (b)) return true;
+    return false;
+}
+
+void BreatheEditor::setAdvValue (int i, float plain)
+{
+    const float v = jlimit (-100.0f, 100.0f, std::round (plain * 10.0f) / 10.0f);
+    advParam[i]->setValueNotifyingHost (advParam[i]->convertTo0to1 (v));
+}
+
+void BreatheEditor::touchAdv (int i)
+{
+    if (i % 3 == 2) { advView = 1; dynBand = i / 3; }
+    else if (! dynSticky) advView = 0;
+}
+
+void BreatheEditor::readBandScope()
+{
+    int s1, n1, s2, n2;
+    const int ready = proc.bandFifo.getNumReady() & ~1;
+    proc.bandFifo.prepareToRead (ready, s1, n1, s2, n2);
+    int k = 0;
+    auto take = [&] (int start, int count)
+    {
+        for (int j = 0; j < count; ++j, ++k)
+        {
+            const float v = proc.bandData[(size_t) (start + j)];
+            if ((k & 1) == 0) bandPre[(size_t) bandPos] = v;
+            else { bandPost[(size_t) bandPos] = v; bandPos = (bandPos + 1) & ((1 << 17) - 1); }
+        }
+    };
+    take (s1, n1); take (s2, n2);
+    proc.bandFifo.finishedRead (n1 + n2);
+
+    if (advView == 1 && dynBand >= 2)
+    {
+        const double fs = proc.currentRate();
+        const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
+        const float f0 = edges[dynBand], f1 = jmin (20000.0f, (float) fs * 0.45f);
+        for (int which = 0; which < 2; ++which)
+        {
+            const auto& src = which == 0 ? bandPre : bandPost;
+            for (int i = 0; i < 4096; ++i)
+            {
+                const float wnd = 0.5f - 0.5f * std::cos (2.0f * pi * (float) i / 4095.0f);
+                fftBuf[(size_t) i] = src[(size_t) ((bandPos - 4096 + i) & ((1 << 17) - 1))] * wnd;
+            }
+            std::fill (fftBuf.begin() + 4096, fftBuf.end(), 0.0f);
+            fft.performFrequencyOnlyForwardTransform (fftBuf.data(), true);
+            auto& dst = which == 0 ? specPre : specPost;
+            for (int i = 0; i <= 120; ++i)
+            {
+                const float f = f0 * std::pow (f1 / f0, (float) i / 120.0f);
+                const float bin = f / (float) fs * 4096.0f;
+                const int b0 = jlimit (1, 2047, (int) bin), b1 = jlimit (1, 2047, (int) (bin * 1.04f) + 1);
+                float m = 0.0f;
+                for (int q = b0; q <= b1; ++q) m = jmax (m, fftBuf[(size_t) q]);
+                const float db = Decibels::gainToDecibels (m / 1024.0f, -120.0f);
+                auto& d = dst[(size_t) i];
+                d += (db - d) * 0.25f;
+            }
+        }
+    }
+}
+
+void BreatheEditor::drawAdvStatic (Graphics& g)
+{
+    const auto& t = look.theme();
+    const Colour pc = panelColour (t);
+    if (advOpen)
+    {
+        const Rectangle<float> a (0.0f, H, W, (float) advH);
+        g.setGradientFill (ColourGradient (mixWith (pc, -0.18f), 0, a.getY(), mixWith (pc, -0.42f), 0, a.getBottom(), false));
+        g.fillRect (a);
+        g.setTiledImageFill (grainTile, 0, 0, 1.0f);
+        g.fillRect (a);
+        Random r (99);
+        for (int i = 0; i < 420; ++i)
+        {
+            const float y = a.getY() + r.nextFloat() * a.getHeight(), x0 = r.nextFloat() * W, len = 80.0f + r.nextFloat() * 300.0f;
+            g.setColour ((r.nextFloat() < 0.55f ? Colours::white : Colours::black).withAlpha (t.lightBg ? 0.05f : 0.04f));
+            g.drawLine (x0, y, jmin (W, x0 + len), y, 0.2f + r.nextFloat() * 0.8f);
+        }
+        g.setColour (Colours::black.withAlpha (0.55f));
+        g.fillRect (0.0f, H, W, 3.0f);
+        g.setColour (Colour (0xff121214));
+        g.fillRoundedRectangle (advFrame, 12.0f);
+        g.setColour (Colours::black.withAlpha (0.8f));
+        g.drawRoundedRectangle (advFrame, 12.0f, 1.2f);
+    }
+    const Rectangle<float> st (0.0f, stripY(), W, (float) stripH);
+    g.setColour (mixWith (pc, t.lightBg ? -0.3f : -0.55f));
+    g.fillRect (st);
+    g.setColour (Colours::black.withAlpha (0.6f));
+    g.fillRect (0.0f, st.getY(), W, 1.5f);
+}
+
+void BreatheEditor::drawStrip (Graphics& g)
+{
+    const auto& t = look.theme();
+    const bool lit = advActive();
+    const Rectangle<float> b (500.0f, stripY() + 5.0f, 180.0f, 24.0f);
+    const bool hot = hitKey (mouse) == "adv";
+    g.setColour (lit ? t.accent.withAlpha (hot ? 0.24f : 0.16f) : Colour (0xff1c1c1f).withAlpha (hot ? 1.0f : 0.9f));
+    g.fillRoundedRectangle (b, 12.0f);
+    g.setColour (lit ? t.accent.withAlpha (0.75f) : Colour (0xff35353a));
+    g.drawRoundedRectangle (b, 12.0f, 1.2f);
+    const String label = advOpen ? "HIDE ADVANCED" : "ADVANCED";
+    g.setFont (uiFont (10.5f, true, 0.2f));
+    const Colour tc = lit ? t.accentHi : Colour (0xff5a5a60);
+    g.setColour (tc);
+    const float tw = GlyphArrangement::getStringWidth (uiFont (10.5f, true, 0.2f), label);
+    const float x0 = b.getCentreX() - (tw + 14.0f) * 0.5f;
+    g.drawText (label, Rectangle<float> (x0, b.getY(), tw + 2.0f, b.getHeight()), Justification::centredLeft);
+    Path tri;
+    const float tx = x0 + tw + 9.0f, ty = b.getCentreY();
+    if (advOpen) tri.addTriangle (tx - 3.5f, ty + 2.0f, tx + 3.5f, ty + 2.0f, tx, ty - 2.5f);
+    else         tri.addTriangle (tx - 3.5f, ty - 2.0f, tx + 3.5f, ty - 2.0f, tx, ty + 2.5f);
+    g.fillPath (tri);
+}
+
+void BreatheEditor::drawAdvanced (Graphics& g)
+{
+    const auto& t = look.theme();
+    const Colour acc = t.accent;
+    const auto sR = advScreenR;
+    {
+        Graphics::ScopedSaveState ss (g);
+        Path clip; clip.addRoundedRectangle (sR, 4.0f);
+        g.reduceClipRegion (clip);
+        g.setGradientFill (ColourGradient (Colour (0xff1a1418), 0, sR.getY(), Colour (0xff0e0b0d), 0, sR.getBottom(), false));
+        g.fillRect (sR);
+        if (advView == 1) { if (dynBand < 2) drawCompScreen (g, sR, dynBand); else drawLiftScreen (g, sR, dynBand); }
+        else drawEqScreen (g, sR);
+        g.setColour (Colours::black.withAlpha (0.16f));
+        for (float yy = sR.getY(); yy < sR.getBottom(); yy += 3.0f) g.fillRect (sR.getX(), yy, sR.getWidth(), 1.0f);
+    }
+    // EQ / DYN tabs
+    for (int i = 0; i < 2; ++i)
+    {
+        const Rectangle<float> r (968.0f + (float) i * 38.0f, H + 22.0f, 34.0f, 18.0f);
+        const bool on = advView == i;
+        g.setColour (on ? acc.withAlpha (0.22f) : Colour (0xff1c1c20));
+        g.fillRoundedRectangle (r, 9.0f);
+        g.setColour (on ? acc.withAlpha (0.8f) : Colour (0xff3a3a40));
+        g.drawRoundedRectangle (r, 9.0f, 1.0f);
+        g.setColour (on ? t.accentHi : Colour (0xff8a8a90));
+        g.setFont (uiFont (9.5f, true));
+        g.drawText (i == 0 ? "EQ" : "DYN", r, Justification::centred);
+    }
+
+    // knob groups
+    const Colour ink = t.lightBg ? Colour (0xff1e1300) : Colour (0xfff2f2f5);
+    for (int b = 0; b < 4; ++b)
+    {
+        const bool on = bandOn (b);
+        g.setFont (uiFont (12.0f, true, 0.13f));
+        g.setColour (on ? ink : ink.withAlpha (0.35f));
+        g.drawText (Params::bandName[b], Rectangle<float> (advGroupX[b] - 90, H + 244, 180, 16), Justification::centred);
+    }
+    for (int i = 0; i < 12; ++i)
+    {
+        const auto c = advKnobPos (i);
+        const bool on = bandOn (i / 3);
+        const float v = advParam[i]->convertFrom0to1 (advParam[i]->getValue());
+        const float r = 16.0f, R = 22.0f;
+        const bool hot = on && (i == hoverAdv || i == dragAdv);
+        const Colour col = on ? acc : Colour (0xff5a5a60);
+        if (hot)
+        {
+            g.setColour (acc.withAlpha (0.08f));
+            g.fillEllipse (c.x - R - 9, c.y - R - 9, (R + 9) * 2, (R + 9) * 2);
+            g.setColour (acc.withAlpha (0.45f));
+            g.drawEllipse (c.x - R - 9, c.y - R - 9, (R + 9) * 2, (R + 9) * 2, 1.0f);
+        }
+        Path track;
+        track.addCentredArc (c.x, c.y, R, R, 0.0f, -pi * 0.75f, pi * 0.75f, true);
+        g.setColour (col.withAlpha (0.14f));
+        g.strokePath (track, PathStrokeType (2.6f, PathStrokeType::curved, PathStrokeType::rounded));
+        const float ang = v / 100.0f * pi * 0.75f;
+        if (std::abs (v) >= 0.05f)
+        {
+            Path arc;
+            arc.addCentredArc (c.x, c.y, R, R, 0.0f, jmin (0.0f, ang), jmax (0.0f, ang), true);
+            glowStroke (g, arc, col, 2.6f, on ? 0.8f : 0.0f);
+        }
+        g.setColour (Colour (0xffaaaaaa));
+        g.fillEllipse (c.x - 1.4f, c.y - R - 6.4f, 2.8f, 2.8f);
+        g.setColour (Colours::black.withAlpha (0.5f));
+        g.fillEllipse (c.x - r - 1, c.y - r + 2, (r + 1) * 2, (r + 1) * 2);
+        ColourGradient body (Colour (0xff4a4a50), c.x - r * 0.3f, c.y - r * 0.5f, Colour (0xff0b0b0d), c.x + r, c.y + r, true);
+        body.addColour (0.55, Colour (0xff1f1f23));
+        g.setGradientFill (body);
+        g.fillEllipse (c.x - r, c.y - r, r * 2, r * 2);
+        g.setColour (Colours::black.withAlpha (0.6f));
+        g.drawEllipse (c.x - r, c.y - r, r * 2, r * 2, 1.0f);
+        const float sx = std::sin (ang), sy = -std::cos (ang);
+        g.setColour (on ? Colours::white : Colour (0xff777777));
+        g.drawLine (c.x + sx * r * 0.3f, c.y + sy * r * 0.3f, c.x + sx * r * 0.85f, c.y + sy * r * 0.85f, 2.3f);
+        const String name = i % 3 == 2 ? String (Params::advDynName[i / 3]) : String (advKindName[i % 3]);
+        g.setFont (uiFont (10.0f, true, 0.12f));
+        g.setColour (on ? ink.withAlpha (0.92f) : ink.withAlpha (0.35f));
+        g.drawText (name, Rectangle<float> (c.x - 30, c.y + R + 6, 60, 13), Justification::centred);
+        g.setFont (uiFont (9.5f));
+        g.setColour (on ? t.accentHi : ink.withAlpha (0.3f));
+        g.drawText (trimText (v), Rectangle<float> (c.x - 34, c.y + R + 19, 68, 13), Justification::centred);
+    }
+    // RESET
+    {
+        const Rectangle<float> r (530.0f, H + 268.0f, 120.0f, 30.0f);
+        const bool hot = hitKey (mouse) == "advReset";
+        g.setColour (Colour (hot ? 0xff1d1d21 : 0xff151517));
+        g.fillRoundedRectangle (r, 15.0f);
+        g.setColour (Colour (0xff3a3a40));
+        g.drawRoundedRectangle (r, 15.0f, 1.0f);
+        g.setFont (uiFont (10.5f, true, 0.2f));
+        g.setColour (Colour (0xffb9b9bf));
+        g.drawText ("RESET", r, Justification::centred);
+    }
+}
+
+void BreatheEditor::drawEqScreen (Graphics& g, Rectangle<float> sR)
+{
+    const auto& t = look.theme();
+    const Colour acc = t.accent;
+    const bool byp = bypassed();
+    const float x = sR.getX(), w = sR.getWidth(), y = sR.getY(), h = sR.getHeight();
+    auto X = [&] (float f) { return x + std::log (f / 20.0f) / std::log (1000.0f) * w; };
+    const float mid = y + h * 0.5f, dbPx = (h * 0.5f - 12.0f) / 16.0f;
+    auto Y = [&] (float db) { return mid - jlimit (-16.0f, 16.0f, db) * dbPx; };
+
+    g.setColour (Colours::white.withAlpha (0.05f));
+    for (float f : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
+        g.drawVerticalLine (roundToInt (X (f)), y, y + h);
+    g.setFont (uiFont (9.0f));
+    for (float d : { -12.0f, -6.0f, 0.0f, 6.0f, 12.0f })
+    {
+        g.setColour (Colours::white.withAlpha (d == 0.0f ? 0.14f : 0.05f));
+        g.drawHorizontalLine (roundToInt (Y (d)), x + 24, x + w);
+        g.setColour (Colour (0xff8a8a90));
+        g.drawText ((d > 0 ? "+" : "") + String ((int) d), Rectangle<float> (x + 4, Y (d) - 6, 22, 12), Justification::centredLeft);
+    }
+
+    // drive glow per band
+    const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
+    float glow[4] {};
+    for (int b = 0; b < 4; ++b)
+    {
+        const float tr = advParam[b * 3 + 1]->convertFrom0to1 (advParam[b * 3 + 1]->getValue()) * 0.01f;
+        const float df = tr < 0.0f ? 1.0f + tr : 1.0f + 2.0f * tr;
+        glow[b] = bandOn (b) && audible (b) ? jlimit (0.0f, 1.0f, 0.1f + 0.45f * Dsp::taper (value (b)) * df) : 0.0f;
+        if (byp) glow[b] *= 0.3f;
+        const float x0 = X (edges[b]), x1 = X (edges[b + 1]);
+        g.setGradientFill (ColourGradient (acc.withAlpha (0.7f * glow[b]), 0, y + h, acc.withAlpha (0.0f), 0, y + h * 0.1f, false));
+        g.fillRect (x0, y, x1 - x0, h);
+    }
+    // spectrum
+    {
+        Path sp;
+        sp.startNewSubPath (x, y + h);
+        for (int i = 0; i <= 160; ++i)
+            sp.lineTo (x + (float) i / 160.0f * w, y + h - 6.0f - jlimit (0.0f, 1.0f, spectrum[(size_t) i]) * (h * 0.62f));
+        sp.lineTo (x + w, y + h);
+        sp.closeSubPath();
+        g.setColour (Colours::white.withAlpha (0.06f));
+        g.fillPath (sp);
+        g.setColour (Colours::white.withAlpha (0.16f));
+        g.strokePath (sp, PathStrokeType (1.0f));
+    }
+    // crossovers
+    for (int i = 0; i < 3; ++i)
+    {
+        Path line, dash;
+        line.startNewSubPath (X (xoFreq (i)), y);
+        line.lineTo (X (xoFreq (i)), y + h);
+        const float dl[] = { 3.0f, 3.0f };
+        PathStrokeType (1.0f).createDashedStroke (dash, line, dl, 2);
+        g.setColour (acc.withAlpha (0.35f));
+        g.fillPath (dash);
+    }
+    // the resulting Pultec curve
+    {
+        const auto ms = Dsp::blend (modeParam->getValue() > 0.5f ? 1.0f : 0.0f);
+        float e[4], xo[3] { xoFreq (0), xoFreq (1), xoFreq (2) };
+        for (int b = 0; b < 4; ++b)
+            e[b] = Dsp::taper (value (b)) * Dsp::eqTrim (ms.eq, advParam[b * 3]->convertFrom0to1 (advParam[b * 3]->getValue()) * 0.01f);
+        const double fs = jmax (44100.0, proc.currentRate());
+        const auto k = Dsp::pultec (fs, e, xo, 1.0f);
+        Path c;
+        for (int i = 0; i <= 240; ++i)
+        {
+            const float f = 20.0f * std::pow (1000.0f, (float) i / 240.0f);
+            double m = 1.0;
+            for (const auto& q : k) m *= q.magnitude (fs, f);
+            const float py = Y ((float) (20.0 * std::log10 (jmax (1.0e-6, m))));
+            if (i == 0) c.startNewSubPath (x, py); else c.lineTo (X (f), py);
+        }
+        glowStroke (g, c, acc.withAlpha (byp ? 0.35f : 1.0f), 2.2f, byp ? 0.3f : 0.9f);
+    }
+    // band names and frequency labels
+    for (int b = 0; b < 4; ++b)
+    {
+        g.setFont (uiFont (10.0f, true, 0.15f));
+        g.setColour (acc.withAlpha (0.4f + 0.55f * glow[b]));
+        g.drawText (Params::bandName[b], Rectangle<float> (X (edges[b]), y + 6, X (edges[b + 1]) - X (edges[b]), 14), Justification::centred);
+    }
+    g.setFont (uiFont (9.0f));
+    g.setColour (Colour (0xff8a8a90));
+    for (float f : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
+        g.drawText (freqShort (f), Rectangle<float> (X (f) - 20, y + h - 14, 40, 12), Justification::centred);
+}
+
+void BreatheEditor::drawCompScreen (Graphics& g, Rectangle<float> sR, int b)
+{
+    const auto& t = look.theme();
+    const Colour acc = t.accent;
+    const float y = sR.getY(), h = sR.getHeight();
+    const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
+
+    // left: gain reduction
+    g.setFont (uiFont (10.0f, true, 0.12f));
+    g.setColour (t.accentHi);
+    g.drawText (String (Params::bandName[b]) + "  COMP", Rectangle<float> (100, y + 6, 180, 14), Justification::centredLeft);
+    g.setFont (uiFont (9.0f));
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText ("GAIN REDUCTION", Rectangle<float> (100, y + 30, 180, 12), Justification::centredLeft);
+    g.setFont (uiFont (34.0f, true));
+    g.setColour (t.accentHi);
+    g.drawText ((grShown > 0.05f ? "-" : "") + String (grShown, 1), Rectangle<float> (98, y + 44, 120, 40), Justification::centredLeft);
+    g.setFont (uiFont (13.0f, true));
+    g.setColour (Colour (0xffbbbbbb));
+    g.drawText ("dB", Rectangle<float> (98 + GlyphArrangement::getStringWidth (uiFont (34.0f, true), (grShown > 0.05f ? "-" : "") + String (grShown, 1)) + 4, y + 58, 30, 20), Justification::centredLeft);
+    const Rectangle<float> bar (100, y + 94, 150, 8);
+    g.setColour (Colour (0xff1a1a1e)); g.fillRoundedRectangle (bar, 4.0f);
+    g.setColour (Colour (0xff333336)); g.drawRoundedRectangle (bar, 4.0f, 1.0f);
+    g.setColour (acc);
+    g.fillRoundedRectangle (bar.withWidth (jmax (8.0f, jmin (1.0f, grShown / 8.0f) * bar.getWidth())), 4.0f);
+    g.setFont (uiFont (8.5f));
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText ("0", Rectangle<float> (100, y + 106, 30, 12), Justification::centredLeft);
+    g.drawText ("-8 dB", Rectangle<float> (200, y + 106, 50, 12), Justification::centredRight);
+    g.setColour (Colours::white.withAlpha (0.08f));
+    g.drawVerticalLine (300, y + 10, y + h - 10);
+
+    // wave of the band, last 2 seconds (columns and scale come from the timer)
+    const Rectangle<float> wv (318.0f, y + 4.0f, 722.0f, h - 22.0f);
+    const float cyy = compCy, A = compA;
+    const int cols = (int) waveHi.size();
+    const auto& hi = waveHi;
+    const auto& lo = waveLo;
+    const float thrAmp = Decibels::decibelsToGain (proc.thrDb[b].load()) * 1.414f;
+    auto wy = [&] (float v) { return cyy - jlimit (-1.05f, 1.05f, v / waveScale) * A; };
+    Path wave;
+    for (int c = 0; c < cols; ++c)
+    {
+        const float px = wv.getX() + (float) c / (float) (cols - 1) * wv.getWidth();
+        if (c == 0) wave.startNewSubPath (px, wy (hi[0])); else wave.lineTo (px, wy (hi[(size_t) c]));
+    }
+    for (int c = cols - 1; c >= 0; --c)
+        wave.lineTo (wv.getX() + (float) c / (float) (cols - 1) * wv.getWidth(), wy (lo[(size_t) c]));
+    wave.closeSubPath();
+    g.setColour (acc.withAlpha (0.45f));
+    g.fillPath (wave);
+    const float off = jmin (A, thrAmp / waveScale * A);
+    {
+        Graphics::ScopedSaveState s2 (g);
+        RectangleList<int> region;
+        region.add (wv.withBottom (cyy - off).toNearestInt());
+        region.add (wv.withTop (cyy + off).toNearestInt());
+        g.reduceClipRegion (region);
+        g.setColour (Colour (0xffffd0e4));
+        g.fillPath (wave);
+    }
+    // gain reduction hanging from the top
+    {
+        const int nH = (int) grHist.size() * 2 / 3;
+        const float sc = h * 0.28f / 4.0f;
+        Path gp, edge;
+        gp.startNewSubPath (wv.getX(), y);
+        for (int i = 0; i < nH; ++i)
+        {
+            const float v = grHist[(size_t) ((grPos - nH + i + (int) grHist.size()) % (int) grHist.size())];
+            const float px = wv.getX() + (float) i / (float) (nH - 1) * wv.getWidth(), py = y + jmin (4.0f, v) * sc;
+            gp.lineTo (px, py);
+            if (i == 0) edge.startNewSubPath (px, py); else edge.lineTo (px, py);
+        }
+        gp.lineTo (wv.getRight(), y);
+        gp.closeSubPath();
+        g.setGradientFill (ColourGradient (acc.withAlpha (0.35f), 0, y, acc.withAlpha (0.05f), 0, y + 4.0f * sc, false));
+        g.fillPath (gp);
+        g.setColour (acc.withAlpha (0.9f));
+        g.strokePath (edge, PathStrokeType (1.4f));
+    }
+    // threshold lines and tag
+    const bool hot = dragThr || hitKey (mouse) == "advThr";
+    for (const float ly : { cyy - off, cyy + off })
+    {
+        Path line, dash;
+        line.startNewSubPath (wv.getX(), ly);
+        line.lineTo (wv.getRight(), ly);
+        const float dl[] = { 7.0f, 6.0f };
+        PathStrokeType (hot ? 2.0f : 1.4f).createDashedStroke (dash, line, dl, 2);
+        g.setColour (t.accentHi.withAlpha (0.95f));
+        g.fillPath (dash);
+    }
+    const float offDb = -12.0f * advParam[b * 3 + 2]->convertFrom0to1 (advParam[b * 3 + 2]->getValue()) * 0.01f;
+    const Rectangle<float> tag (wv.getRight() - 128, cyy - off - 24, 122, 18);
+    g.setColour (Colour (0xff141417)); g.fillRoundedRectangle (tag, 5.0f);
+    g.setColour (acc.withAlpha (0.6f)); g.drawRoundedRectangle (tag, 5.0f, 1.0f);
+    g.setColour (t.accentHi);
+    g.setFont (uiFont (10.0f));
+    g.drawText ("THRESHOLD " + String (offDb > 0.04f ? "+" : offDb < -0.04f ? "-" : "") + String (std::abs (offDb), 1) + " dB", tag, Justification::centred);
+    g.setFont (uiFont (9.0f));
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText (String (Params::bandName[b]) + " BAND  " + freqShort (edges[b]) + String::fromUTF8 ("\xe2\x80\x93") + freqShort (edges[b + 1]) + " Hz",
+                Rectangle<float> (wv.getX(), y + h - 14, 300, 12), Justification::centredLeft);
+    // GR meter
+    const Rectangle<float> m (1086.0f, y + 12, 12.0f, h - 34);
+    g.setColour (Colour (0xff1a1a1e)); g.fillRoundedRectangle (m, 3.0f);
+    g.setColour (Colour (0xff333336)); g.drawRoundedRectangle (m, 3.0f, 1.0f);
+    g.setColour (acc);
+    g.fillRoundedRectangle (m.reduced (2.0f).withHeight (jmin (1.0f, grShown / 8.0f) * (m.getHeight() - 4.0f)), 2.0f);
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText ("GR", Rectangle<float> (m.getCentreX() - 15, m.getBottom() + 2, 30, 12), Justification::centred);
+}
+
+void BreatheEditor::drawLiftScreen (Graphics& g, Rectangle<float> sR, int b)
+{
+    const auto& t = look.theme();
+    const Colour acc = t.accent;
+    const float y = sR.getY(), h = sR.getHeight();
+    const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
+    const auto ms = Dsp::blend (modeParam->getValue() > 0.5f ? 1.0f : 0.0f);
+    const float L = ms.lift[b] * Dsp::dynTrim (advParam[b * 3 + 2]->convertFrom0to1 (advParam[b * 3 + 2]->getValue()) * 0.01f) * Dsp::taper (value (b));
+    auto liftAt = [L] (float rel) { const float q = jlimit (0.0f, 1.0f, (-3.0f - rel) / 20.0f); return L * q * q * (3.0f - 2.0f * q); };
+
+    // left: the Dolby A-style characteristic, input level vs. the band's average
+    const float gx = 104.0f, gy = y + 24.0f, gs = 122.0f, lo = -48.0f, hiDb = 6.0f;
+    auto X = [&] (float d) { return gx + (jlimit (lo, hiDb, d) - lo) / (hiDb - lo) * gs; };
+    auto Y = [&] (float d) { return gy + gs - (jlimit (lo, hiDb, d) - lo) / (hiDb - lo) * gs; };
+    g.setFont (uiFont (10.0f, true, 0.12f));
+    g.setColour (t.accentHi);
+    g.drawText (String (Params::bandName[b]) + "  LIFT", Rectangle<float> (gx, y + 6, 180, 14), Justification::centredLeft);
+    g.setColour (Colours::white.withAlpha (0.03f)); g.fillRect (gx, gy, gs, gs);
+    g.setColour (acc.withAlpha (0.07f)); g.fillRect (gx, gy, X (-3.0f) - gx, gs);
+    g.setColour (Colours::white.withAlpha (0.08f)); g.drawRect (gx, gy, gs, gs, 1.0f);
+    {
+        Path d, dash;
+        d.startNewSubPath (X (lo), Y (lo)); d.lineTo (X (hiDb), Y (hiDb));
+        const float dl[] = { 3.0f, 3.0f };
+        PathStrokeType (1.0f).createDashedStroke (dash, d, dl, 2);
+        g.setColour (Colours::white.withAlpha (0.3f)); g.fillPath (dash);
+        Path c;
+        for (int i = 0; i <= 108; ++i)
+        {
+            const float in = lo + (float) i * 0.5f;
+            const Point<float> pt (X (in), Y (jmin (hiDb, in + liftAt (in))));
+            if (i == 0) c.startNewSubPath (pt); else c.lineTo (pt);
+        }
+        glowStroke (g, c, acc, 2.2f, 0.9f);
+    }
+    const float rel = proc.liftRel[b].load();
+    if (rel > lo)
+    {
+        const Point<float> dot (X (rel), Y (jmin (hiDb, rel + liftShown)));
+        g.setColour (t.accentHi); g.drawLine (X (rel), Y (rel), dot.x, dot.y, 1.5f);
+        g.setColour (acc.withAlpha (0.3f)); g.fillEllipse (dot.x - 7, dot.y - 7, 14, 14);
+        g.setColour (Colours::white); g.fillEllipse (dot.x - 3.5f, dot.y - 3.5f, 7, 7);
+        g.setFont (uiFont (10.0f, true));
+        g.setColour (t.accentHi);
+        g.drawText ("+" + String (liftShown, 1) + " dB", Rectangle<float> (dot.x + 9, dot.y + 4, 70, 14), Justification::centredLeft);
+    }
+    g.setFont (uiFont (8.5f));
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText ("INPUT LEVEL", Rectangle<float> (gx, gy + gs + 3, gs, 12), Justification::centred);
+    g.drawText ("1:1", Rectangle<float> (gx + gs - 40, gy + 4, 36, 12), Justification::centredRight);
+    g.setColour (t.accentHi.withAlpha (0.85f));
+    g.drawText ("LIFT ZONE", Rectangle<float> (gx + 4, gy + gs - 16, 80, 12), Justification::centredLeft);
+    {
+        Graphics::ScopedSaveState s2 (g);
+        g.addTransform (AffineTransform::rotation (-pi * 0.5f, gx - 9, gy + gs * 0.5f));
+        g.setColour (Colour (0xff8a8a90));
+        g.drawText ("OUTPUT", Rectangle<float> (gx - 9 - 40, gy + gs * 0.5f - 6, 80, 12), Justification::centred);
+    }
+    g.setColour (Colours::white.withAlpha (0.08f));
+    g.drawVerticalLine (272, y + 10, y + h - 10);
+
+    // right: the band's spectrum before and after
+    const double fs = proc.currentRate();
+    const float f0 = edges[b], f1 = jmin (20000.0f, (float) fs * 0.45f);
+    const Rectangle<float> sp (292.0f, y + 30.0f, 718.0f, h - 48.0f);
+    float top = -200.0f;
+    for (int i = 0; i <= 120; ++i) top = jmax (top, jmax (specPre[(size_t) i], specPost[(size_t) i]));
+    const float dbTop = std::ceil ((top + 6.0f) / 10.0f) * 10.0f, dbBot = dbTop - 70.0f;
+    auto SX = [&] (float f) { return sp.getX() + std::log (f / f0) / std::log (f1 / f0) * sp.getWidth(); };
+    auto SY = [&] (float d) { return sp.getBottom() - (jlimit (dbBot, dbTop, d) - dbBot) / (dbTop - dbBot) * sp.getHeight(); };
+    g.setFont (uiFont (9.0f));
+    for (float d = dbTop - 10.0f; d > dbBot; d -= 20.0f)
+    {
+        g.setColour (Colours::white.withAlpha (0.05f));
+        g.drawHorizontalLine (roundToInt (SY (d)), sp.getX(), sp.getRight());
+        g.setColour (Colour (0xff8a8a90));
+        g.drawText (String ((int) d), Rectangle<float> (sp.getRight() + 4, SY (d) - 6, 30, 12), Justification::centredLeft);
+    }
+    for (float f : { 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 3000.0f, 5000.0f, 7000.0f, 10000.0f, 15000.0f })
+        if (f > f0 * 1.08f && f < f1 * 0.95f)
+        {
+            g.setColour (Colours::white.withAlpha (0.05f));
+            g.drawVerticalLine (roundToInt (SX (f)), sp.getY(), sp.getBottom());
+            g.setColour (Colour (0xff8a8a90));
+            g.drawText (freqShort (f), Rectangle<float> (SX (f) - 20, sp.getBottom() + 2, 40, 12), Justification::centred);
+        }
+    Path pre, post, gap;
+    for (int i = 0; i <= 120; ++i)
+    {
+        const float f = f0 * std::pow (f1 / f0, (float) i / 120.0f);
+        const Point<float> a (SX (f), SY (specPre[(size_t) i])), c (SX (f), SY (specPost[(size_t) i]));
+        if (i == 0) { pre.startNewSubPath (a); post.startNewSubPath (c); gap.startNewSubPath (c); }
+        else { pre.lineTo (a); post.lineTo (c); gap.lineTo (c); }
+    }
+    for (int i = 120; i >= 0; --i)
+    {
+        const float f = f0 * std::pow (f1 / f0, (float) i / 120.0f);
+        gap.lineTo (SX (f), SY (jmin (specPre[(size_t) i], specPost[(size_t) i])));
+    }
+    gap.closeSubPath();
+    Path preFill (pre);
+    preFill.lineTo (sp.getRight(), sp.getBottom()); preFill.lineTo (sp.getX(), sp.getBottom()); preFill.closeSubPath();
+    g.setColour (Colours::white.withAlpha (0.06f)); g.fillPath (preFill);
+    g.setColour (acc.withAlpha (0.45f)); g.fillPath (gap);
+    g.setColour (Colours::white.withAlpha (0.45f)); g.strokePath (pre, PathStrokeType (1.0f));
+    glowStroke (g, post, acc, 1.8f, 0.8f);
+    // legend
+    g.setFont (uiFont (9.5f));
+    const float ly = y + 16.0f;
+    g.setColour (Colours::white.withAlpha (0.5f)); g.drawLine (292, ly, 308, ly, 1.5f);
+    g.setColour (Colour (0xffbbbbbb)); g.drawText ("BEFORE", Rectangle<float> (314, ly - 7, 60, 14), Justification::centredLeft);
+    g.setColour (acc); g.drawLine (368, ly, 384, ly, 2.0f);
+    g.setColour (Colour (0xffbbbbbb)); g.drawText ("AFTER", Rectangle<float> (390, ly - 7, 50, 14), Justification::centredLeft);
+    g.setColour (acc.withAlpha (0.45f)); g.fillRoundedRectangle (434, ly - 5, 14, 10, 2.0f);
+    g.setColour (Colour (0xffbbbbbb)); g.drawText ("LIFTED DETAIL", Rectangle<float> (454, ly - 7, 100, 14), Justification::centredLeft);
+    // lift meter
+    const Rectangle<float> m (1086.0f, y + 30, 12.0f, h - 48);
+    g.setColour (Colour (0xff1a1a1e)); g.fillRoundedRectangle (m, 3.0f);
+    g.setColour (Colour (0xff333336)); g.drawRoundedRectangle (m, 3.0f, 1.0f);
+    const float hh = jmin (1.0f, liftShown / 8.0f) * (m.getHeight() - 4.0f);
+    g.setColour (acc);
+    g.fillRoundedRectangle (m.getX() + 2, m.getBottom() - 2 - hh, 8, hh, 2.0f);
+    g.setFont (uiFont (9.5f, true));
+    g.setColour (t.accentHi);
+    g.drawText ("+" + String (liftShown, 1), Rectangle<float> (m.getCentreX() - 20, m.getY() - 16, 40, 12), Justification::centred);
+    g.setFont (uiFont (8.5f));
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText ("dB", Rectangle<float> (m.getCentreX() - 15, m.getBottom() + 2, 30, 12), Justification::centred);
+}
+
+//==============================================================================
+void BreatheEditor::showAbout()
+{
+    about.accent = look.theme().accent;
+    about.info = [this]
+    {
+        StringArray s;
+        const double fs = proc.currentRate();
+        const int lat = proc.getLatencySamples();
+        const int o = (int) ovsParam->convertFrom0to1 (ovsParam->getValue());
+        s.add (String ("Version|") + JucePlugin_VersionString);
+        s.add (String ("Build|") + __DATE__);
+        s.add (String ("Format|") + AudioProcessor::getWrapperTypeDescription (proc.wrapperType));
+        s.add ("Host|" + String (PluginHostType().getHostDescription()));
+        s.add ("Sample rate|" + String (fs / 1000.0, 1) + " kHz");
+        s.add ("Latency|" + String (lat) + " samples (" + String (lat / fs * 1000.0, 1) + " ms)");
+        s.add ("Oversampling|" + Params::ovsNames[o] + ",  " + (flag (linParam) ? "linear-phase" : "minimum-phase") + " crossovers");
+        return s;
+    };
+    about.setVisible (true);
+    about.toFront (false);
+    about.repaint();
+}
+
+void AboutOverlay::paint (Graphics& g)
+{
+    const float s = (float) getWidth() / (float) BreatheEditor::baseW;
+    g.fillAll (Colours::black.withAlpha (0.72f));
+    const Rectangle<float> card ((float) getWidth() * 0.5f - 270.0f * s, (float) getHeight() * 0.5f - 210.0f * s, 540.0f * s, 420.0f * s);
+    g.setColour (Colour (0xff17171a));
+    g.fillRoundedRectangle (card, 14.0f * s);
+    g.setColour (accent.withAlpha (0.5f));
+    g.drawRoundedRectangle (card, 14.0f * s, 1.2f * s);
+
+    const Rectangle<float> la (card.getCentreX() - 36.0f * s, card.getY() + 28.0f * s, 72.0f * s, 74.0f * s);
+    Path lp (Logo::path());
+    lp.applyTransform (RectanglePlacement (RectanglePlacement::centred).getTransformToFit (Logo::viewBox, la));
+    g.setColour (accent);
+    g.fillPath (lp);
+
+    g.setColour (Colours::white);
+    g.setFont (uiFont (34.0f * s, true, 0.04f));
+    g.drawText ("BREATHE", Rectangle<float> (card.getX(), card.getY() + 110.0f * s, card.getWidth(), 40.0f * s), Justification::centred);
+    g.setFont (uiFont (11.0f * s, true, 0.3f));
+    g.setColour (Colour (0xffcfcfd4));
+    g.drawText ("ANALOG COLOR PROCESSOR", Rectangle<float> (card.getX(), card.getY() + 152.0f * s, card.getWidth(), 18.0f * s), Justification::centred);
+
+    float yy = card.getY() + 190.0f * s;
+    g.setFont (uiFont (12.5f * s));
+    if (info)
+        for (const auto& line : info())
+        {
+            const int sp = line.indexOfChar ('|');
+            const auto key = line.substring (0, sp), val = line.substring (sp + 1);
+            g.setColour (Colour (0xff8a8a90));
+            g.drawText (key, Rectangle<float> (card.getX() + 60.0f * s, yy, 130.0f * s, 20.0f * s), Justification::centredLeft);
+            g.setColour (Colour (0xffececf0));
+            g.drawText (val, Rectangle<float> (card.getX() + 190.0f * s, yy, card.getWidth() - 230.0f * s, 20.0f * s), Justification::centredLeft);
+            yy += 22.0f * s;
+        }
+    g.setFont (uiFont (11.0f * s, true, 0.25f));
+    g.setColour (accent);
+    g.drawText ("PRIMAL RAGE LAB", Rectangle<float> (card.getX(), card.getBottom() - 56.0f * s, card.getWidth(), 16.0f * s), Justification::centred);
+    g.setFont (uiFont (10.0f * s));
+    g.setColour (Colour (0xff77777d));
+    g.drawText (String::fromUTF8 ("\xc2\xa9 2026 Primal Rage Lab. Click anywhere to close."), Rectangle<float> (card.getX(), card.getBottom() - 34.0f * s, card.getWidth(), 14.0f * s), Justification::centred);
 }

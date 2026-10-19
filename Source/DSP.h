@@ -103,6 +103,13 @@ namespace Dsp
     }
 
     //==========================================================================
+    // Advanced trims (t = -1..+1, 0 = the factory recipe)
+    constexpr float eqTrimMax = 9.0f;           // +100 %: a real Pultec (about +13.5 dB of low boost at full knob)
+    inline float eqTrim (float base, float t)   { return t < 0.0f ? base * (1.0f + t) : base + t * (eqTrimMax - base); }
+    inline float driveTrim (float t)            { return t < 0.0f ? 1.0f + t : std::pow (10.0f, 12.0f * t / 20.0f); }   // -100 % clean, +100 % +12 dB
+    inline float dynTrim (float t)              { return 1.0f + t; }                                                        // -100 % off, +100 % double
+
+    //==========================================================================
     // Harmonic recipe of a band, by its centre frequency. Values = THD (fraction) before the mode scale.
     struct Recipe { float transformer, tape, tube; };
 

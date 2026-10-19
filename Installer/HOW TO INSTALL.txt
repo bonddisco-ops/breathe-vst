@@ -1,4 +1,4 @@
-BREATHE 0.2 by Primal Rage Lab
+BREATHE 0.9 by Primal Rage Lab
 ===================================
 
 ---------------------------------------------------------------
@@ -30,13 +30,14 @@ MAC
    xattr -cr ~/Library/Audio/Plug-Ins/Components/"Breathe.component"
 
 КАК ПОЛЬЗОВАТЬСЯ
- - Каждая точка на экране = своя полоса частот со своим дилеем.
-   Высота точки = сколько этой полосы уходит в дилей, колесо мыши на точке = ширина (Q).
- - Двойной клик по пустому месту = новая точка (до 8), двойной клик по точке = убрать.
- - Кликни точку = снизу выедет её панель: время, feedback, режим, duck, drive, diffuse.
- - Наушники на плашке точки (или Alt+клик) = слушать только эту полосу.
- - Dry в 0 и Wet на 100 = ставь на посыл (send).
- - Темы оформления - шестерёнка справа вверху. Окно тянется за правый нижний угол.
+ - Четыре полосы, по одной ручке на полосу. Ручка масштабирует весь рецепт полосы:
+   ламповое, ленточное и трансформаторное насыщение, оптическую компрессию,
+   подъём тихих деталей в стиле Dolby A и пультековскую кривую. На нуле полоса прозрачна.
+ - MASTER - мастеринговая интенсивность, MIX - полная, для шин и дорожек.
+ - IN - драйв железа с компенсацией уровня. LIN - линейно-фазовые кроссоверы.
+ - ADVANCED внизу - точная настройка EQ, DRIVE, COMP и LIFT каждой полосы.
+ - Клик по логотипу - информация о плагине. Шестерёнка - тема, подсказки, тур.
+ - Подробно - в PDF-руководстве.
 
 ---------------------------------------------------------------
 ENGLISH
@@ -59,10 +60,10 @@ MAC
    xattr -cr ~/Library/Audio/Plug-Ins/Components/"Breathe.component"
 
 USING IT
- - Every point on the screen is its own frequency band with its own delay.
-   Point height = how much of that band goes into the delay. Mouse wheel on a point = width (Q).
- - Double-click empty space = new point (up to 8). Double-click a point = remove it.
- - Click a point and its drawer slides up: time, feedback, mode, duck, drive, diffuse.
- - Headphones on the point's tag (or Alt+click) = solo that band.
- - Dry at 0 and Wet at 100 = use it on a send.
- - Themes live under the gear, top right. Drag the bottom-right corner to resize.
+ - Four bands, one knob each. A knob scales the band's whole recipe: tube, tape and
+   transformer saturation, optical compression, Dolby A-style low-level lift and a
+   Pultec-style curve. At zero the band is transparent.
+ - MASTER = mastering intensity, MIX = full intensity for buses and tracks.
+ - IN = drive into the iron, level-compensated. LIN = linear-phase crossovers.
+ - ADVANCED at the bottom = fine EQ, DRIVE, COMP and LIFT trims per band.
+ - Click the logo for version info. The gear holds themes, hints and the tour.

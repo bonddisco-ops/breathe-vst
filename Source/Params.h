@@ -21,6 +21,12 @@ namespace Params
     inline const char* const input = "input";
     inline const char* const mode = "mode";
 
+    // Advanced trims, -100..+100 %, centre = the factory recipe
+    inline const char* const advEq[numBands] = { "advEq1", "advEq2", "advEq3", "advEq4" };
+    inline const char* const advDrive[numBands] = { "advDrive1", "advDrive2", "advDrive3", "advDrive4" };
+    inline const char* const advDyn[numBands] = { "advComp1", "advComp2", "advLift3", "advLift4" };   // COMP on LOW/LOW-MID, LIFT on HIGH-MID/HIGH
+    inline const char* const advDynName[numBands] = { "COMP", "COMP", "LIFT", "LIFT" };
+
     inline const juce::StringArray ovsNames { "1x", "2x", "4x", "8x", "16x" };
 
     // crossover ranges (Hz) and defaults
@@ -64,6 +70,14 @@ namespace Params
         l.add (std::make_unique<AudioParameterFloat> (ParameterID { input, 1 }, "Input", NormalisableRange<float> (-30.0f, 30.0f), 0.0f,
                    AudioParameterFloatAttributes().withLabel ("dB")
                        .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
+        auto trim = [] (float v, int) { return (v > 0.04f ? "+" : v < -0.04f ? "-" : "") + String (std::abs (v), 1) + " %"; };
+        for (int b = 0; b < numBands; ++b)
+        {
+            const auto attr = AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction (trim);
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { advEq[b], 1 }, String (bandName[b]) + " EQ", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { advDrive[b], 1 }, String (bandName[b]) + " Drive", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { advDyn[b], 1 }, String (bandName[b]) + " " + (b < 2 ? "Comp" : "Lift"), NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
+        }
         l.add (std::make_unique<AudioParameterChoice> (ParameterID { mode, 1 }, "Mode", StringArray { "MASTER", "MIX" }, 0));
         l.add (std::make_unique<AudioParameterChoice> (ParameterID { ovs, 1 }, "Oversampling", ovsNames, 1));
         l.add (std::make_unique<AudioParameterBool> (ParameterID { lin, 1 }, "Linear Phase", true));

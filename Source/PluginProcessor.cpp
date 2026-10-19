@@ -59,6 +59,9 @@ BreatheProcessor::BreatheProcessor()
         knob[b] = apvts.getRawParameterValue (Params::band[b]);
         soloP[b] = apvts.getRawParameterValue (Params::solo[b]);
         muteP[b] = apvts.getRawParameterValue (Params::mute[b]);
+        advEqP[b] = apvts.getRawParameterValue (Params::advEq[b]);
+        advDriveP[b] = apvts.getRawParameterValue (Params::advDrive[b]);
+        advDynP[b] = apvts.getRawParameterValue (Params::advDyn[b]);
     }
     for (int i = 0; i < 3; ++i) xo[i] = apvts.getRawParameterValue (Params::xover[i]);
     mixP = apvts.getRawParameterValue (Params::mix);
@@ -129,6 +132,7 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
         for (auto* v : { &gTubeA[ch], &bTubeA[ch], &gTapeA[ch], &tXfA[ch], &jitA[ch] })
             v->assign ((size_t) maxBlock, 0.0f);
     inGainA.assign ((size_t) maxBlock, 1.0f);
+    scopePre.assign ((size_t) maxBlock, 0.0f);
 
     // linear-phase filters for the current settings, ready before the first block
     splitter.prepare (designer->designIfChanged (true));
@@ -261,6 +265,16 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     modeS.setTargetValue (modeP->load());
     bypassS.setTargetValue (byp ? 1.0f : 0.0f);
     const auto ms = Dsp::blend (modeS.skip (n));
+    {
+        // Advanced trims glide (about 50 ms) so turning them never clicks
+        const float a = (float) jmin (1.0, (double) n / (0.05 * sampleRate));
+        for (int b = 0; b < 4; ++b)
+        {
+            trimEq[b] += a * (advEqP[b]->load() * 0.01f - trimEq[b]);
+            trimDrive[b] += a * (advDriveP[b]->load() * 0.01f - trimDrive[b]);
+            trimDyn[b] += a * (advDynP[b]->load() * 0.01f - trimDyn[b]);
+        }
+    }
 
     float xoNow[3];
     for (int i = 0; i < 3; ++i)
@@ -326,9 +340,30 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
         }
     }
 
-    // ---- bands
+    // ---- bands (the band the Advanced screen looks at is copied before and after, for its scope)
+    const int sb = scopeBand.load();
+    if (sb >= 0 && sb < 4)
+        for (int i = 0; i < n; ++i)
+            scopePre[(size_t) i] = 0.5f * (bandBuf[sb].getSample (0, i) + bandBuf[sb].getSample (1, i));
     for (int b = 0; b < 4; ++b)
         processBand (b, n, age, ms);
+    if (sb >= 0 && sb < 4)
+    {
+        int s1, n1, s2, n2;
+        const int want = jmin (n, bandFifo.getFreeSpace() / 2);
+        bandFifo.prepareToWrite (want * 2, s1, n1, s2, n2);
+        int k = 0;
+        auto put = [&] (int start, int count)
+        {
+            for (int j = 0; j < count; ++j, ++k)
+            {
+                const int i = k >> 1;
+                bandData[(size_t) (start + j)] = (k & 1) ? 0.5f * (bandBuf[sb].getSample (0, i) + bandBuf[sb].getSample (1, i)) : scopePre[(size_t) i];
+            }
+        };
+        put (s1, n1); put (s2, n2);
+        bandFifo.finishedWrite (n1 + n2);
+    }
 
     // ---- sum with solo / mute
     wetBuf.clear (0, n);
@@ -344,8 +379,8 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     // ---- Pultec curve after the iron and its level return, analog phase in both modes
     {
         float e[4];
-        for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue();
-        const auto k = Dsp::pultec (sampleRate, e, xoNow, ms.eq);
+        for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue() * Dsp::eqTrim (ms.eq, trimEq[b]);
+        const auto k = Dsp::pultec (sampleRate, e, xoNow, 1.0f);
         for (int ch = 0; ch < 2; ++ch)
         {
             float* d = wetBuf.getWritePointer (ch);
@@ -428,18 +463,24 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     }
 
     // ---- dynamics at the base rate: opto squeeze + Dolby-style lift of quiet details
-    const float oMax = ms.opto[b], lMax = ms.lift[b];
+    // COMP trim (LOW, LOW-MID) moves the opto threshold: + lowers it (up to -12 dB) and lets it squeeze up to twice as deep,
+    // - raises it (up to +12 dB). LIFT trim (HIGH-MID, HIGH) scales the lift.
+    const float thrOff = b < 2 ? -12.0f * trimDyn[b] : 0.0f;
+    const float oMax = ms.opto[b] * (b < 2 ? 1.0f + jmax (0.0f, trimDyn[b]) : 1.0f);
+    const float lMax = ms.lift[b] * (b >= 2 ? Dsp::dynTrim (trimDyn[b]) : 1.0f);
     auto coef = [fs] (double sec) { return 1.0 - std::exp (-1.0 / (sec * fs)); };
     const double cFast = coef (0.005), cRef = coef (3.0), cRefUp = coef (0.4), cLa = coef (0.003), cLr = coef (0.06), cMeas = coef (0.8);
-    const float aF = (float) coef (0.010), rF = (float) coef (0.08), aS = (float) coef (0.6), rS = (float) coef (1.5), cMk = (float) coef (2.5);
+    // fast opto stage: 30 ms attack lets the first cycles of low notes through (no low-end distortion)
+    const float aF = (float) coef (0.030), rF = (float) coef (b == 0 ? 0.080 : 0.070), aS = (float) coef (0.6), rS = (float) coef (1.5), cMk = (float) coef (2.5);
     const float cLift = (float) coef (0.005), cSag = (float) coef (0.02);
     const auto& R = B.recipe;
-    const float kTube = std::sqrt (7.2f * R.tube * ms.sat) / Dsp::refAmp, kTape = std::sqrt (12.0f * R.tape * ms.sat) / Dsp::refAmp;
-    const float kXf = 4.0f * R.transformer * ms.sat / (Dsp::refAmp * Dsp::refAmp);
+    const float dTrim = Dsp::driveTrim (trimDrive[b]);
+    const float kTube = dTrim * std::sqrt (7.2f * R.tube * ms.sat) / Dsp::refAmp, kTape = dTrim * std::sqrt (12.0f * R.tape * ms.sat) / Dsp::refAmp;
+    const float kXf = dTrim * dTrim * 4.0f * R.transformer * ms.sat / (Dsp::refAmp * Dsp::refAmp);
     const float baseBias = 0.222f * Dsp::refAmp;
     const float life = b == 0 ? 0.0f : ms.life;          // no wobble below ~100 Hz: the low end stays solid
 
-    float lastGr = 0, lastLift = 0;
+    float lastGr = 0, lastLift = 0, lastRel = -100.0f;
     for (int i = 0; i < n; ++i)
     {
         const float e = B.amount.getNextValue();
@@ -455,7 +496,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         if (oMax > 0.0f)
         {
             const float lvlDb = (float) (10.0 * std::log10 (B.pFast + 1.0e-12));
-            const float over = lvlDb - (refDb + 2.0f);
+            const float over = lvlDb - (refDb + 2.0f + thrOff);
             const float soft = over < -3.0f ? 0.0f : over < 3.0f ? (over + 3.0f) * (over + 3.0f) / 12.0f : over;
             const float grT = jmin (oMax * e, soft * 0.75f) * (refDb > -80.0f ? 1.0f : 0.0f);
             B.optoF += (grT > B.optoF ? aF : rF) * (grT - B.optoF);
@@ -468,6 +509,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         if (lMax > 0.0f)
         {
             const float lDb = (float) (10.0 * std::log10 (B.pLift + 1.0e-12));
+            lastRel = lDb - refDb;
             const float t = jlimit (0.0f, 1.0f, (refDb - 3.0f - lDb) / 20.0f);
             const float gate = jlimit (0.0f, 1.0f, (lDb + 85.0f) / 15.0f);
             const float target = lMax * e * t * t * (3.0f - 2.0f * t) * gate;
@@ -503,6 +545,8 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     }
     optoGr[b] = lastGr;
     liftDb[b] = lastLift;
+    liftRel[b] = lastRel;
+    thrDb[b] = (float) (10.0 * std::log10 (B.pRef + 1.0e-12)) + 2.0f + thrOff;
 
     // ---- non-linear stage, oversampled, in mid/side: whatever sits in the centre is treated identically
     //      in both channels, so the stereo image can never shift, however hard the iron is driven.

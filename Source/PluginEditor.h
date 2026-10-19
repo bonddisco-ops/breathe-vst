@@ -2,7 +2,18 @@
 #include "PluginProcessor.h"
 #include "Ui.h"
 
+// "About" card shown when the logo is clicked
+class AboutOverlay : public juce::Component
+{
+public:
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override { setVisible (false); }
+    std::function<juce::StringArray()> info;
+    juce::Colour accent { 0xffff73b2 };
+};
+
 // The whole front panel is drawn by hand on a 1180 x 560 grid and scaled to the window.
+// Below it: the ADVANCED strip and, when opened, the Advanced panel.
 class BreatheEditor : public juce::AudioProcessorEditor, public juce::TooltipClient, private juce::Timer
 {
 public:
@@ -26,13 +37,17 @@ public:
     void startTourForTest (int step) { welcome.setVisible (false); tour.start (lang); tour.showStep (step); }
     void hideWelcomeForTest() { welcome.setVisible (false); }
 
-    static constexpr int baseW = 1180, baseH = 560;
+    static constexpr int baseW = 1180, baseH = 560, stripH = 34, advH = 360;
+    void setAdvancedOpen (bool open);
+    void showAboutForTest() { showAbout(); }
+    void showDynForTest (int band) { advView = 1; dynBand = band; dynSticky = true; }
 
 private:
     BreatheProcessor& proc;
     BLook look;
     TourOverlay tour;
     WelcomePrompt welcome;
+    AboutOverlay about;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow;
     Help::Lang lang = Help::Lang::en;
     bool helpOn = true, ready = false;
@@ -48,6 +63,39 @@ private:
     float filGlowPx = 0.0f, physScale = 1.0f, shownInLevel = -100.0f;
     void buildKnobCache (int k, float px);
     juce::Colour inColour() const;
+    // Advanced panel: 12 trims, index = band * 3 + kind (0 EQ, 1 DRIVE, 2 COMP/LIFT)
+    bool advOpen = false;
+    juce::RangedAudioParameter* advParam[12] {};
+    int hoverAdv = -1, dragAdv = -1;
+    float dragAdvStart = 0.0f, dragAdvAccum = 0.0f;
+    int advView = 0, dynBand = 0;             // 0 = EQ screen, 1 = dynamics screen of dynBand
+    bool dynSticky = false, dragThr = false;
+    double dynHoldUntil = 0.0;
+    std::vector<float> bandPre = std::vector<float> (1 << 17, 0.0f), bandPost = std::vector<float> (1 << 17, 0.0f);
+    int bandPos = 0;
+    std::array<float, 120> grHist {};
+    int grPos = 0;
+    std::array<float, 121> specPre {}, specPost {};
+    float grShown = 0.0f, liftShown = 0.0f, waveScale = 0.01f;
+    std::vector<float> waveHi = std::vector<float> (361, 0.0f), waveLo = std::vector<float> (361, 0.0f);
+    void readBandScope();
+    void drawEqScreen (juce::Graphics&, juce::Rectangle<float>);
+    void drawCompScreen (juce::Graphics&, juce::Rectangle<float>, int band);
+    void drawLiftScreen (juce::Graphics&, juce::Rectangle<float>, int band);
+    void touchAdv (int index);
+    float logicalH() const { return (float) (baseH + stripH + (advOpen ? advH : 0)); }
+    float stripY() const { return logicalH() - (float) stripH; }
+    juce::Point<float> advKnobPos (int i) const;
+    int advKnobAt (juce::Point<float>) const;
+    bool bandOn (int b) const;
+    bool advActive() const;
+    void setAdvValue (int i, float plain);
+    void drawAdvStatic (juce::Graphics&);
+    void drawAdvanced (juce::Graphics&);
+    void drawStrip (juce::Graphics&);
+    void showAbout();
+    void applySizeLimits();
+
     juce::RangedAudioParameter *xoParam[3] {}, *soloParam[4] {}, *muteParam[4] {}, *ovsParam = nullptr, *linParam = nullptr, *bypassParam = nullptr;
 
     // cached static panel
