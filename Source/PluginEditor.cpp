@@ -386,7 +386,7 @@ String BreatheEditor::hitKey (Point<float> p) const
         if (Rectangle<float> (1006, H + 22, 34, 18).contains (p)) return "tabDyn";
         if (advView == 1 && dynBand < 2 && Rectangle<float> (318, H + 46, 722, 168).contains (p))
         {
-            const float amp = Decibels::decibelsToGain (proc.thrDb[dynBand].load()) * 1.414f;
+            const float amp = Decibels::decibelsToGain (proc.sideThr[telSide()][dynBand].load()) * 1.414f;
             const float off = jmin (71.0f, amp / waveScale * 71.0f);
             if (std::abs (std::abs (p.y - (H + 123.0f)) - off) < 7.0f) return "advThr";
         }
@@ -1533,6 +1533,15 @@ void BreatheEditor::tick (double dt)
     // Advanced panel: which screen, its scope data, repaint
     if (advView == 1 && ! dynSticky && dragAdv < 0 && ! dragThr && clock > dynHoldUntil) advView = 0;
     proc.scopeBand = (advOpen && advView == 1) ? dynBand : -1;
+    proc.scopeSide = telSide();
+    if (const int pm = procModeParam->getValue() < 0.5f ? 0 : 1; pm != shownProcMode)
+    {
+        // M/S <-> L/R: the side letters on the panel and the Advanced tabs change
+        shownProcMode = pm;
+        panel = {};
+        knobSignature = {};
+        repaint();
+    }
     if (advOpen)
     {
         readBandScope();
@@ -1546,22 +1555,49 @@ void BreatheEditor::tick (double dt)
                 const int st = bandPos - total + c * per;
                 for (int i = 0; i < per; ++i)
                 {
-                    const float v = bandPost[(size_t) ((st + i) & ((1 << 17) - 1))];
+                    const float v = bandPost[(size_t) ((st + i) & ((1 << 18) - 1))];
                     a = jmax (a, v); z = jmin (z, v);
                 }
                 waveHi[(size_t) c] = a; waveLo[(size_t) c] = z;
                 mx = jmax (mx, jmax (a, -z));
             }
-            const float thrAmp = Decibels::decibelsToGain (proc.thrDb[dynBand].load()) * 1.414f;
+            const float thrAmp = Decibels::decibelsToGain (proc.sideThr[telSide()][dynBand].load()) * 1.414f;
             const float target = jmax (mx * 1.1f, thrAmp * 1.3f, 1.0e-4f);
             waveScale += (target - waveScale) * (target > waveScale ? 0.5f : 0.04f);
         }
-        const float gr = dynBand < 2 ? proc.optoGr[dynBand].load() : 0.0f;
+        if (advView == 1 && dynBand >= 2)
+        {
+            // LIFT screen: band level before / after, RMS per column over the last 4 s (dB)
+            const int cols = (int) envPre.size(), total = (int) jmin (250000.0, proc.currentRate() * 4.0), per = jmax (1, total / cols);
+            for (int c = 0; c < cols; ++c)
+            {
+                double a = 0.0, z = 0.0;
+                const int st = bandPos - total + c * per;
+                for (int i = 0; i < per; ++i)
+                {
+                    const int ix = (st + i) & ((1 << 18) - 1);
+                    a += (double) bandPre[(size_t) ix] * bandPre[(size_t) ix];
+                    z += (double) bandPost[(size_t) ix] * bandPost[(size_t) ix];
+                }
+                envPre[(size_t) c] = (float) (10.0 * std::log10 (a / per + 1.0e-12));
+                envPost[(size_t) c] = (float) (10.0 * std::log10 (z / per + 1.0e-12));
+            }
+            // level-meter ballistics along the time axis: instant rise, ~80 ms fall, so the curves read as level, not as a waveform
+            float pa = envPre[0], pz = envPost[0];
+            const float fall = 1.0f - std::exp (-(float) per / (0.08f * (float) proc.currentRate()));
+            for (int c = 0; c < cols; ++c)
+            {
+                pa = envPre[(size_t) c] > pa ? envPre[(size_t) c] : pa + (envPre[(size_t) c] - pa) * fall;
+                pz = envPost[(size_t) c] > pz ? envPost[(size_t) c] : pz + (envPost[(size_t) c] - pz) * fall;
+                envPre[(size_t) c] = pa; envPost[(size_t) c] = pz;
+            }
+        }
+        const float gr = dynBand < 2 ? proc.sideGr[telSide()][dynBand].load() : 0.0f;
         grShown += (gr - grShown) * jmin (1.0f, fdt * 12.0f);
-        liftShown += ((dynBand >= 2 ? proc.liftDb[dynBand].load() : 0.0f) - liftShown) * jmin (1.0f, fdt * 10.0f);
+        liftShown += ((dynBand >= 2 ? proc.sideLift[telSide()][dynBand].load() : 0.0f) - liftShown) * jmin (1.0f, fdt * 10.0f);
         for (int b = 0; b < 4; ++b)
         {
-            const float tgt = ! bandOn (b) ? 0.0f : b < 2 ? -proc.optoGr[b].load() : proc.liftDb[b].load();
+            const float tgt = ! bandOn (b) ? 0.0f : b < 2 ? -proc.sideGr[telSide()][b].load() : proc.sideLift[telSide()][b].load();
             auto& v = bandDynShown[b];
             v += (tgt - v) * jmin (1.0f, fdt * (std::abs (tgt) > std::abs (v) ? 14.0f : 6.0f));
         }
@@ -2019,41 +2055,12 @@ void BreatheEditor::readBandScope()
         {
             const float v = proc.bandData[(size_t) (start + j)];
             if ((k & 1) == 0) bandPre[(size_t) bandPos] = v;
-            else { bandPost[(size_t) bandPos] = v; bandPos = (bandPos + 1) & ((1 << 17) - 1); }
+            else { bandPost[(size_t) bandPos] = v; bandPos = (bandPos + 1) & ((1 << 18) - 1); }
         }
     };
     take (s1, n1); take (s2, n2);
     proc.bandFifo.finishedRead (n1 + n2);
 
-    if (advView == 1 && dynBand >= 2)
-    {
-        const double fs = proc.currentRate();
-        const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
-        const float f0 = edges[dynBand], f1 = jmin (20000.0f, (float) fs * 0.45f);
-        for (int which = 0; which < 2; ++which)
-        {
-            const auto& src = which == 0 ? bandPre : bandPost;
-            for (int i = 0; i < 4096; ++i)
-            {
-                const float wnd = 0.5f - 0.5f * std::cos (2.0f * pi * (float) i / 4095.0f);
-                fftBuf[(size_t) i] = src[(size_t) ((bandPos - 4096 + i) & ((1 << 17) - 1))] * wnd;
-            }
-            std::fill (fftBuf.begin() + 4096, fftBuf.end(), 0.0f);
-            fft.performFrequencyOnlyForwardTransform (fftBuf.data(), true);
-            auto& dst = which == 0 ? specPre : specPost;
-            for (int i = 0; i <= 120; ++i)
-            {
-                const float f = f0 * std::pow (f1 / f0, (float) i / 120.0f);
-                const float bin = f / (float) fs * 4096.0f;
-                const int b0 = jlimit (1, 2047, (int) bin), b1 = jlimit (1, 2047, (int) (bin * 1.04f) + 1);
-                float m = 0.0f;
-                for (int q = b0; q <= b1; ++q) m = jmax (m, fftBuf[(size_t) q]);
-                const float db = Decibels::gainToDecibels (m / 1024.0f, -120.0f);
-                auto& d = dst[(size_t) i];
-                d += (db - d) * 0.25f;
-            }
-        }
-    }
 }
 
 void BreatheEditor::drawAdvStatic (Graphics& g)
@@ -2251,7 +2258,7 @@ void BreatheEditor::drawEqScreen (Graphics& g, Rectangle<float> sR)
     {
         const float tr = advParam[b * 3 + 1]->convertFrom0to1 (advParam[b * 3 + 1]->getValue()) * 0.01f;
         const float df = tr < 0.0f ? 1.0f + tr : 1.0f + 2.0f * tr;
-        glow[b] = bandOn (b) && audible (b) ? jlimit (0.0f, 1.0f, 0.1f + 0.45f * Dsp::taper (value (b)) * df) : 0.0f;
+        glow[b] = bandOn (b) && audible (b) ? jlimit (0.0f, 1.0f, 0.1f + 0.45f * Dsp::taper (editValue (b)) * df) : 0.0f;
         if (byp) glow[b] *= 0.3f;
         if (glow[b] <= 0.0f) continue;
         const float x0 = X (edges[b]), x1 = X (edges[b + 1]);
@@ -2307,7 +2314,7 @@ void BreatheEditor::drawEqScreen (Graphics& g, Rectangle<float> sR)
         const auto ms = Dsp::blend (modeParam->getValue() > 0.5f ? 1.0f : 0.0f);
         float e[4], xo[3] { xoFreq (0), xoFreq (1), xoFreq (2) };
         for (int b = 0; b < 4; ++b)
-            e[b] = Dsp::taper (value (b)) * Dsp::eqTrim (ms.eq, advParam[b * 3]->convertFrom0to1 (advParam[b * 3]->getValue()) * 0.01f);
+            e[b] = Dsp::taper (editValue (b)) * Dsp::eqTrim (ms.eq, advParam[b * 3]->convertFrom0to1 (advParam[b * 3]->getValue()) * 0.01f);
         const double fs = jmax (44100.0, proc.currentRate());
         const auto k = Dsp::pultec (fs, e, xo, 1.0f);
         Path c;
@@ -2372,7 +2379,7 @@ void BreatheEditor::drawCompScreen (Graphics& g, Rectangle<float> sR, int b)
     const int cols = (int) waveHi.size();
     const auto& hi = waveHi;
     const auto& lo = waveLo;
-    const float thrAmp = Decibels::decibelsToGain (proc.thrDb[b].load()) * 1.414f;
+    const float thrAmp = Decibels::decibelsToGain (proc.sideThr[telSide()][b].load()) * 1.414f;
     auto wy = [&] (float v) { return cyy - jlimit (-1.05f, 1.05f, v / waveScale) * A; };
     Path wave;
     for (int c = 0; c < cols; ++c)
@@ -2450,132 +2457,89 @@ void BreatheEditor::drawCompScreen (Graphics& g, Rectangle<float> sR, int b)
 
 void BreatheEditor::drawLiftScreen (Graphics& g, Rectangle<float> sR, int b)
 {
+    // the band's level over the last 4 s: grey = as it comes in, accent = after the lift.
+    // The filled gap between them is what the lift brings up.
     const auto& t = look.theme();
     const Colour acc = t.accent;
     const float y = sR.getY(), h = sR.getHeight();
-    const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
-    const auto ms = Dsp::blend (modeParam->getValue() > 0.5f ? 1.0f : 0.0f);
-    const float L = ms.lift[b] * Dsp::dynTrim (advParam[b * 3 + 2]->convertFrom0to1 (advParam[b * 3 + 2]->getValue()) * 0.01f) * Dsp::taper (value (b));
-    auto liftAt = [L] (float rel) { const float q = jlimit (0.0f, 1.0f, (-3.0f - rel) / 20.0f); return L * q * q * (3.0f - 2.0f * q); };
+    const Rectangle<float> gr (104.0f, y + 32.0f, 920.0f, h - 50.0f);
+    const int cols = (int) envPre.size();
 
-    // left: the Dolby A-style characteristic, input level vs. the band's average
-    const float gx = 104.0f, gy = y + 24.0f, gs = 122.0f, lo = -48.0f, hiDb = 6.0f;
-    auto X = [&] (float d) { return gx + (jlimit (lo, hiDb, d) - lo) / (hiDb - lo) * gs; };
-    auto Y = [&] (float d) { return gy + gs - (jlimit (lo, hiDb, d) - lo) / (hiDb - lo) * gs; };
+    float top = -60.0f;
+    for (int c = 0; c < cols; ++c) top = jmax (top, jmax (envPre[(size_t) c], envPost[(size_t) c]));
+    const float dbTop = std::ceil ((top + 3.0f) / 6.0f) * 6.0f;
+    shownLiftTop += (dbTop - shownLiftTop) * (dbTop > shownLiftTop ? 0.5f : 0.03f);
+    const float yTop = shownLiftTop, yBot = shownLiftTop - 42.0f;
+    auto X = [&] (int c) { return gr.getX() + (float) c / (float) (cols - 1) * gr.getWidth(); };
+    auto Y = [&] (float d) { return gr.getBottom() - (jlimit (yBot, yTop, d) - yBot) / (yTop - yBot) * gr.getHeight(); };
+
+    // title and legend
     g.setFont (uiFont (10.0f, true, 0.12f));
     g.setColour (t.accentHi);
-    g.drawText (String (Params::bandName[b]) + "  LIFT", Rectangle<float> (gx, y + 6, 180, 14), Justification::centredLeft);
-    g.setColour (Colours::white.withAlpha (0.03f)); g.fillRect (gx, gy, gs, gs);
-    g.setColour (acc.withAlpha (0.07f)); g.fillRect (gx, gy, X (-3.0f) - gx, gs);
-    g.setColour (Colours::white.withAlpha (0.08f)); g.drawRect (gx, gy, gs, gs, 1.0f);
-    {
-        Path d, dash;
-        d.startNewSubPath (X (lo), Y (lo)); d.lineTo (X (hiDb), Y (hiDb));
-        const float dl[] = { 3.0f, 3.0f };
-        PathStrokeType (1.0f).createDashedStroke (dash, d, dl, 2);
-        g.setColour (Colours::white.withAlpha (0.3f)); g.fillPath (dash);
-        Path c;
-        for (int i = 0; i <= 108; ++i)
-        {
-            const float in = lo + (float) i * 0.5f;
-            const Point<float> pt (X (in), Y (jmin (hiDb, in + liftAt (in))));
-            if (i == 0) c.startNewSubPath (pt); else c.lineTo (pt);
-        }
-        glowStroke (g, c, acc, 2.2f, 0.9f);
-    }
-    const float rel = proc.liftRel[b].load();
-    if (rel > lo)
-    {
-        const Point<float> dot (X (rel), Y (jmin (hiDb, rel + liftShown)));
-        g.setColour (t.accentHi); g.drawLine (X (rel), Y (rel), dot.x, dot.y, 1.5f);
-        g.setColour (acc.withAlpha (0.3f)); g.fillEllipse (dot.x - 7, dot.y - 7, 14, 14);
-        g.setColour (Colours::white); g.fillEllipse (dot.x - 3.5f, dot.y - 3.5f, 7, 7);
-        g.setFont (uiFont (10.0f, true));
-        g.setColour (t.accentHi);
-        g.drawText ("+" + String (liftShown, 1) + " dB", Rectangle<float> (dot.x + 9, dot.y + 4, 70, 14), Justification::centredLeft);
-    }
-    g.setFont (uiFont (8.5f));
-    g.setColour (Colour (0xff8a8a90));
-    g.drawText ("INPUT LEVEL", Rectangle<float> (gx, gy + gs + 3, gs, 12), Justification::centred);
-    g.drawText ("1:1", Rectangle<float> (gx + gs - 40, gy + 4, 36, 12), Justification::centredRight);
-    g.setColour (t.accentHi.withAlpha (0.85f));
-    g.drawText ("LIFT ZONE", Rectangle<float> (gx + 4, gy + gs - 16, 80, 12), Justification::centredLeft);
-    {
-        Graphics::ScopedSaveState s2 (g);
-        g.addTransform (AffineTransform::rotation (-pi * 0.5f, gx - 9, gy + gs * 0.5f));
-        g.setColour (Colour (0xff8a8a90));
-        g.drawText ("OUTPUT", Rectangle<float> (gx - 9 - 40, gy + gs * 0.5f - 6, 80, 12), Justification::centred);
-    }
-    g.setColour (Colours::white.withAlpha (0.08f));
-    g.drawVerticalLine (272, y + 10, y + h - 10);
+    g.drawText (String (Params::bandName[b]) + "  LIFT", Rectangle<float> (gr.getX(), y + 8, 180, 14), Justification::centredLeft);
+    g.setFont (uiFont (9.5f));
+    const float ly = y + 15.0f, lx = gr.getX() + 190.0f;
+    g.setColour (Colours::white.withAlpha (0.5f)); g.drawLine (lx, ly, lx + 16, ly, 1.5f);
+    g.setColour (Colour (0xffbbbbbb)); g.drawText ("BEFORE", Rectangle<float> (lx + 22, ly - 7, 60, 14), Justification::centredLeft);
+    g.setColour (acc); g.drawLine (lx + 80, ly, lx + 96, ly, 2.0f);
+    g.setColour (Colour (0xffbbbbbb)); g.drawText ("AFTER", Rectangle<float> (lx + 102, ly - 7, 50, 14), Justification::centredLeft);
+    g.setColour (acc.withAlpha (0.4f)); g.fillRoundedRectangle (lx + 150, ly - 5, 14, 10, 2.0f);
+    g.setColour (Colour (0xffbbbbbb)); g.drawText ("LIFTED", Rectangle<float> (lx + 170, ly - 7, 60, 14), Justification::centredLeft);
 
-    // right: the band's spectrum before and after
-    const double fs = proc.currentRate();
-    const float f0 = edges[b], f1 = jmin (20000.0f, (float) fs * 0.45f);
-    const Rectangle<float> sp (292.0f, y + 30.0f, 718.0f, h - 48.0f);
-    float top = -200.0f;
-    for (int i = 0; i <= 120; ++i) top = jmax (top, jmax (specPre[(size_t) i], specPost[(size_t) i]));
-    const float dbTop = std::ceil ((top + 6.0f) / 10.0f) * 10.0f, dbBot = dbTop - 70.0f;
-    auto SX = [&] (float f) { return sp.getX() + std::log (f / f0) / std::log (f1 / f0) * sp.getWidth(); };
-    auto SY = [&] (float d) { return sp.getBottom() - (jlimit (dbBot, dbTop, d) - dbBot) / (dbTop - dbBot) * sp.getHeight(); };
+    // grid
+    g.setColour (Colours::white.withAlpha (0.025f)); g.fillRect (gr);
     g.setFont (uiFont (9.0f));
-    for (float d = dbTop - 10.0f; d > dbBot; d -= 20.0f)
+    for (float d = std::ceil (yBot / 12.0f) * 12.0f; d <= yTop; d += 12.0f)
     {
         g.setColour (Colours::white.withAlpha (0.05f));
-        g.drawHorizontalLine (roundToInt (SY (d)), sp.getX(), sp.getRight());
+        g.drawHorizontalLine (roundToInt (Y (d)), gr.getX(), gr.getRight());
         g.setColour (Colour (0xff8a8a90));
-        g.drawText (String ((int) d), Rectangle<float> (sp.getRight() + 4, SY (d) - 6, 30, 12), Justification::centredLeft);
+        g.drawText (String ((int) d), Rectangle<float> (gr.getX() - 34, Y (d) - 6, 30, 12), Justification::centredRight);
     }
-    for (float f : { 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 3000.0f, 5000.0f, 7000.0f, 10000.0f, 15000.0f })
-        if (f > f0 * 1.08f && f < f1 * 0.95f)
-        {
-            g.setColour (Colours::white.withAlpha (0.05f));
-            g.drawVerticalLine (roundToInt (SX (f)), sp.getY(), sp.getBottom());
-            g.setColour (Colour (0xff8a8a90));
-            g.drawText (freqShort (f), Rectangle<float> (SX (f) - 20, sp.getBottom() + 2, 40, 12), Justification::centred);
-        }
+    for (int sec = 1; sec < 4; ++sec)
+    {
+        const float xx = gr.getRight() - (float) sec / 4.0f * gr.getWidth();
+        g.setColour (Colours::white.withAlpha (0.04f));
+        g.drawVerticalLine (roundToInt (xx), gr.getY(), gr.getBottom());
+        g.setColour (Colour (0xff8a8a90));
+        g.drawText ("-" + String (sec) + " s", Rectangle<float> (xx - 20, gr.getBottom() + 2, 40, 12), Justification::centred);
+    }
+    g.setColour (Colour (0xff8a8a90));
+    g.drawText ("dB", Rectangle<float> (gr.getX() - 34, gr.getY() - 14, 30, 12), Justification::centredRight);
+
+    // curves
     Path pre, post, gap;
-    for (int i = 0; i <= 120; ++i)
+    for (int c = 0; c < cols; ++c)
     {
-        const float f = f0 * std::pow (f1 / f0, (float) i / 120.0f);
-        const Point<float> a (SX (f), SY (specPre[(size_t) i])), c (SX (f), SY (specPost[(size_t) i]));
-        if (i == 0) { pre.startNewSubPath (a); post.startNewSubPath (c); gap.startNewSubPath (c); }
-        else { pre.lineTo (a); post.lineTo (c); gap.lineTo (c); }
+        const Point<float> a (X (c), Y (envPre[(size_t) c])), p (X (c), Y (envPost[(size_t) c]));
+        if (c == 0) { pre.startNewSubPath (a); post.startNewSubPath (p); gap.startNewSubPath (p); }
+        else { pre.lineTo (a); post.lineTo (p); gap.lineTo (p); }
     }
-    for (int i = 120; i >= 0; --i)
-    {
-        const float f = f0 * std::pow (f1 / f0, (float) i / 120.0f);
-        gap.lineTo (SX (f), SY (jmin (specPre[(size_t) i], specPost[(size_t) i])));
-    }
+    for (int c = cols - 1; c >= 0; --c)
+        gap.lineTo (X (c), Y (jmin (envPre[(size_t) c], envPost[(size_t) c])));
     gap.closeSubPath();
-    Path preFill (pre);
-    preFill.lineTo (sp.getRight(), sp.getBottom()); preFill.lineTo (sp.getX(), sp.getBottom()); preFill.closeSubPath();
-    g.setColour (Colours::white.withAlpha (0.06f)); g.fillPath (preFill);
-    g.setColour (acc.withAlpha (0.45f)); g.fillPath (gap);
-    g.setColour (Colours::white.withAlpha (0.45f)); g.strokePath (pre, PathStrokeType (1.0f));
-    glowStroke (g, post, acc, 1.8f, 0.8f);
-    // legend
-    g.setFont (uiFont (9.5f));
-    const float ly = y + 16.0f;
-    g.setColour (Colours::white.withAlpha (0.5f)); g.drawLine (292, ly, 308, ly, 1.5f);
-    g.setColour (Colour (0xffbbbbbb)); g.drawText ("BEFORE", Rectangle<float> (314, ly - 7, 60, 14), Justification::centredLeft);
-    g.setColour (acc); g.drawLine (368, ly, 384, ly, 2.0f);
-    g.setColour (Colour (0xffbbbbbb)); g.drawText ("AFTER", Rectangle<float> (390, ly - 7, 50, 14), Justification::centredLeft);
-    g.setColour (acc.withAlpha (0.45f)); g.fillRoundedRectangle (434, ly - 5, 14, 10, 2.0f);
-    g.setColour (Colour (0xffbbbbbb)); g.drawText ("LIFTED DETAIL", Rectangle<float> (454, ly - 7, 100, 14), Justification::centredLeft);
-    // lift meter
-    const Rectangle<float> m (1086.0f, y + 30, 12.0f, h - 48);
+    {
+        Graphics::ScopedSaveState clip (g);
+        g.reduceClipRegion (gr.toNearestInt());
+        Path preFill (pre);
+        preFill.lineTo (gr.getRight(), gr.getBottom()); preFill.lineTo (gr.getX(), gr.getBottom()); preFill.closeSubPath();
+        g.setColour (Colours::white.withAlpha (0.05f)); g.fillPath (preFill);
+        g.setColour (acc.withAlpha (0.5f)); g.fillPath (gap);
+        g.setColour (Colours::white.withAlpha (0.55f)); g.strokePath (pre, PathStrokeType (1.3f));
+        glowStroke (g, post, acc, 1.6f, 0.6f);
+    }
+    g.setColour (Colours::white.withAlpha (0.08f)); g.drawRect (gr, 1.0f);
+
+    // lift right now
+    const Rectangle<float> m (1052.0f, gr.getY(), 12.0f, gr.getHeight());
     g.setColour (Colour (0xff1a1a1e)); g.fillRoundedRectangle (m, 3.0f);
     g.setColour (Colour (0xff333336)); g.drawRoundedRectangle (m, 3.0f, 1.0f);
     const float hh = jmin (1.0f, liftShown / 8.0f) * (m.getHeight() - 4.0f);
     g.setColour (acc);
     g.fillRoundedRectangle (m.getX() + 2, m.getBottom() - 2 - hh, 8, hh, 2.0f);
-    g.setFont (uiFont (9.5f, true));
+    g.setFont (uiFont (11.0f, true));
     g.setColour (t.accentHi);
-    g.drawText ("+" + String (liftShown, 1), Rectangle<float> (m.getCentreX() - 20, m.getY() - 16, 40, 12), Justification::centred);
-    g.setFont (uiFont (8.5f));
-    g.setColour (Colour (0xff8a8a90));
-    g.drawText ("dB", Rectangle<float> (m.getCentreX() - 15, m.getBottom() + 2, 30, 12), Justification::centred);
+    g.drawText ("+" + String (liftShown, 1) + " dB", Rectangle<float> (m.getCentreX() - 40, y + 8, 80, 14), Justification::centred);
 }
 
 //==============================================================================

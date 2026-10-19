@@ -5,7 +5,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 # Static MSVC runtime: the plugin does not depend on the host's C++ runtime DLLs
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Breathe VERSION 0.9.1)
+project(Breathe VERSION 0.9.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,7 +87,7 @@ if(BRT_HEADLESS_TEST)
         Source/Ui.cpp)
     target_include_directories(BRTTest PRIVATE Source)
     target_compile_definitions(BRTTest PRIVATE
-        JucePlugin_Name="Breathe" JucePlugin_VersionString="0.9.1" JucePlugin_IsSynth=0 JucePlugin_WantsMidiInput=0
+        JucePlugin_Name="Breathe" JucePlugin_VersionString="0.9.2" JucePlugin_IsSynth=0 JucePlugin_WantsMidiInput=0
         JucePlugin_ProducesMidiOutput=0 JucePlugin_IsMidiEffect=0
         JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_USE_XRANDR=0 JUCE_USE_XINERAMA=0 JUCE_USE_XCURSOR=0

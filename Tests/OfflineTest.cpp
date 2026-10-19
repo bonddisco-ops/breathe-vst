@@ -195,7 +195,8 @@ int main (int argc, char** argv)
             prep (*ed);
             if (spin) for (int i = 0; i < 6; ++i) { auto blk = run (q, in); ed->renderForTest (0.5); }
             else ed->renderForTest (0.5);
-            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            const float shotScale = SystemStats::getEnvironmentVariable ("BRT_SCALE", "1").getFloatValue();
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, shotScale);
             File f = outDir.getChildFile (name + ".png");
             f.deleteFile();
             if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
@@ -241,6 +242,21 @@ int main (int argc, char** argv)
             { "h_splitU", [&] { setup (false, 0); }, [] (BreatheEditor& e) { e.setSplit (true); } },
             { "h_splitU_lr", [&] { setup (false, 1); }, [] (BreatheEditor& e) { e.setSplit (true); } },
         };
+        // M/S -> L/R while the editor is open: the row letters must follow
+        {
+            setup (false, 0);
+            q.apvts.state.setProperty ("split", true, nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->hideWelcomeForTest();
+            ed->renderForTest (0.5);
+            setP (q, Params::procMode, 1);
+            ed->renderForTest (0.2);
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            File f = outDir.getChildFile ("mode_switch_live.png");
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+            q.apvts.state.setProperty ("split", false, nullptr);
+        }
         // split animation frames (open and close)
         for (int fr = 0; fr < 2; ++fr)
         {
@@ -308,6 +324,38 @@ int main (int argc, char** argv)
             if (sh.about) ed->showAboutForTest();
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
             File f = outDir.getChildFile (sh.file);
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        }
+        {
+            // LIFT screen: a loud bar, then a quiet one (the lift brings the quiet detail up)
+            AudioBuffer<float> mus (2, (int) (SR * 2.4));
+            Random r2 (7);
+            float hp2 = 0.0f;
+            for (int i = 0; i < mus.getNumSamples(); ++i)
+            {
+                const double t = i / SR;
+                const float lvl = t < 1.2 ? 1.0f : 0.06f;
+                const float w = r2.nextFloat() * 2 - 1;
+                const float hat = (w - hp2) * (float) std::exp (-std::fmod (t, 0.15) * 25.0) * 0.25f * lvl; hp2 = w;
+                const float tone = 0.2f * lvl * (float) std::sin (2 * MathConstants<double>::pi * 220.0 * t);
+                for (int ch = 0; ch < 2; ++ch) mus.setSample (ch, i, hat + tone);
+            }
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->setAdvancedOpen (true);
+            ed->setSize (BreatheEditor::baseW, BreatheEditor::baseH + BreatheEditor::stripH + BreatheEditor::advH);
+            ed->hideWelcomeForTest();
+            ed->showDynForTest (3);
+            for (int k = 0; k < 4; ++k)
+                for (int pos = 0; pos < mus.getNumSamples(); pos += 2400)
+                {
+                    AudioBuffer<float> bb (2, 2400);
+                    for (int ch = 0; ch < 2; ++ch) bb.copyFrom (ch, 0, mus, ch, pos, 2400);
+                    MidiBuffer md; q.processBlock (bb, md);
+                    ed->renderForTest (0.05);
+                }
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+            File f = outDir.getChildFile ("adv_lift.png");
             f.deleteFile();
             if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
         }

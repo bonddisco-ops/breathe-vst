@@ -409,9 +409,12 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
 
     // ---- bands (the band the Advanced screen looks at is copied before and after, for its scope)
     const int sb = scopeBand.load();
+    // what the scope shows: the mono sum when linked, otherwise the side being edited (M, S, L or R)
+    const int ss = linked ? -1 : scopeSide.load() + (procMs ? 0 : 2);
+    auto scopeOf = [ss] (float l, float r) { return ss == 1 ? 0.5f * (l - r) : ss == 2 ? l : ss == 3 ? r : 0.5f * (l + r); };
     if (sb >= 0 && sb < 4)
         for (int i = 0; i < n; ++i)
-            scopePre[(size_t) i] = 0.5f * (bandBuf[sb].getSample (0, i) + bandBuf[sb].getSample (1, i));
+            scopePre[(size_t) i] = scopeOf (bandBuf[sb].getSample (0, i), bandBuf[sb].getSample (1, i));
     for (int b = 0; b < 4; ++b)
         processBand (b, n, age, ms);
     if (sb >= 0 && sb < 4)
@@ -425,7 +428,7 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
             for (int j = 0; j < count; ++j, ++k)
             {
                 const int i = k >> 1;
-                bandData[(size_t) (start + j)] = (k & 1) ? 0.5f * (bandBuf[sb].getSample (0, i) + bandBuf[sb].getSample (1, i)) : scopePre[(size_t) i];
+                bandData[(size_t) (start + j)] = (k & 1) ? scopeOf (bandBuf[sb].getSample (0, i), bandBuf[sb].getSample (1, i)) : scopePre[(size_t) i];
             }
         };
         put (s1, n1); put (s2, n2);
@@ -579,6 +582,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         }
         B.amount[0].skip (n); B.amount[1].skip (n);
         optoGr[b] = 0.0f; liftDb[b] = 0.0f;
+        for (int c = 0; c < 2; ++c) { sideGr[c][b] = 0.0f; sideLift[c][b] = 0.0f; }
         return;
     }
 
@@ -620,7 +624,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         kXf[c] = dTrim * dTrim * 4.0f * R.transformer * ms.sat / (Dsp::refAmp * Dsp::refAmp);
     }
 
-    float lastGr[2] {}, lastLift[2] {}, lastRel = -100.0f;
+    float lastGr[2] {}, lastLift[2] {}, lastRel[2] { -100.0f, -100.0f };
     float* dd[2] { d0, d1 };
     for (int i = 0; i < n; ++i)
     {
@@ -652,7 +656,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
             if (lMax[c] > 0.0f)
             {
                 const float lDb = (float) (10.0 * std::log10 (B.pLift[c] + 1.0e-12));
-                if (c == 0) lastRel = lDb - refDb;
+                lastRel[c] = lDb - refDb;
                 const float t = jlimit (0.0f, 1.0f, (refDb - 3.0f - lDb) / 20.0f);
                 const float gate = jlimit (0.0f, 1.0f, (lDb + 85.0f) / 15.0f);
                 const float target = lMax[c] * e * t * t * (3.0f - 2.0f * t) * gate;
@@ -689,8 +693,16 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     }
     optoGr[b] = jmax (lastGr[0], lastGr[1]);
     liftDb[b] = jmax (lastLift[0], lastLift[1]);
-    liftRel[b] = lastRel;
+    liftRel[b] = lastRel[0];
     thrDb[b] = (float) (10.0 * std::log10 (B.pRef[0] + 1.0e-12)) + 2.0f + thrOff[0];
+    for (int c = 0; c < 2; ++c)
+    {
+        const int dc = lk ? 0 : c;
+        sideGr[c][b] = lastGr[dc];
+        sideLift[c][b] = lastLift[dc];
+        sideRel[c][b] = lastRel[dc];
+        sideThr[c][b] = (float) (10.0 * std::log10 (B.pRef[dc] + 1.0e-12)) + 2.0f + thrOff[c];
+    }
 
     // ---- non-linear stage, oversampled.
     //      Linked: in mid/side, so whatever sits in the centre is treated identically in both channels and the

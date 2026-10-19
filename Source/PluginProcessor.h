@@ -52,6 +52,8 @@ public:
     std::atomic<float> inLevelDb { -100.0f };             // RMS after the IN knob: what the "iron" gets
     std::atomic<float> liftRel[4] {}, thrDb[4] {};        // Advanced screen: band level vs its average (dB), opto threshold (dB RMS)
     std::atomic<int> scopeBand { -1 };                    // band the Advanced scope looks at (-1 = none)
+    std::atomic<int> scopeSide { 0 };                     // which side the Advanced panel edits (0 = M / L, 1 = S / R)
+    std::atomic<float> sideGr[2][4] {}, sideLift[2][4] {}, sideRel[2][4] {}, sideThr[2][4] {};   // per side: opto GR, lift, level vs average, threshold (dB)
     juce::AbstractFifo bandFifo { 1 << 17 };              // pairs: band before / after processing (mono)
     std::vector<float> bandData = std::vector<float> (1 << 17, 0.0f);
     juce::AbstractFifo scopeFifo { 32768 };

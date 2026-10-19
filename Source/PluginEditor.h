@@ -73,13 +73,15 @@ private:
     int advView = 0, dynBand = 0;             // 0 = EQ screen, 1 = dynamics screen of dynBand
     bool dynSticky = false, dragThr = false;
     double dynHoldUntil = 0.0;
-    std::vector<float> bandPre = std::vector<float> (1 << 17, 0.0f), bandPost = std::vector<float> (1 << 17, 0.0f);
+    std::vector<float> bandPre = std::vector<float> (1 << 18, 0.0f), bandPost = std::vector<float> (1 << 18, 0.0f);
     int bandPos = 0;
     std::array<float, 120> grHist {};
     int grPos = 0;
     std::array<float, 121> specPre {}, specPost {};
     float grShown = 0.0f, liftShown = 0.0f, waveScale = 0.01f;
     float bandDynShown[4] {};                 // EQ screen: opto squeeze (LOW, LOW-MID, negative) / lift (HIGH-MID, HIGH, positive), dB
+    std::vector<float> envPre = std::vector<float> (361, -120.0f), envPost = std::vector<float> (361, -120.0f);
+    float shownLiftTop = -6.0f;
     std::vector<float> waveHi = std::vector<float> (361, 0.0f), waveLo = std::vector<float> (361, 0.0f);
     void readBandScope();
     void drawEqScreen (juce::Graphics&, juce::Rectangle<float>);
@@ -105,6 +107,9 @@ private:
     bool linked() const { return flag (linkParam); }
     int editSide() const { return linked() ? side : (split ? advSide : side); }
     bool sideBandOn (int s, int b) const;
+    int telSide() const { return linked() ? 0 : editSide(); }      // whose meters the Advanced panel shows
+    float editValue (int b) const { auto* p = editSide() == 0 ? band1Param[b] : band2Param[b]; return p->getValue(); }
+    int shownProcMode = -1;
     void remap();
     void mirror (juce::RangedAudioParameter*);
     void copySideFrom (int s);
