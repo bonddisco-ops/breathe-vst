@@ -18,7 +18,7 @@ namespace Dsp
     // How hard each part works at full knob, per mode. MASTER is the default.
     struct ModeScale { float sat, opto[4], lift[4], life, eq; };
     constexpr ModeScale master { 2.5f, { 3.5f, 2.0f, 0.0f, 0.0f }, { 0.0f, 0.3f, 3.5f, 4.5f }, 1.5f, 1.33f };
-    constexpr ModeScale mixMode { 5.0f, { 6.0f, 4.0f, 0.0f, 0.0f }, { 0.0f, 0.6f, 6.0f, 8.0f }, 3.0f, 4.5f };
+    constexpr ModeScale mixMode { 7.0f, { 6.0f, 4.0f, 0.0f, 0.0f }, { 0.0f, 0.6f, 6.0f, 8.0f }, 3.0f, 4.5f };
     inline ModeScale blend (float m)
     {
         auto l = [m] (float a, float b) { return a + (b - a) * m; };
@@ -110,10 +110,10 @@ namespace Dsp
     {
         struct Anchor { float f; Recipe r; };
         static const Anchor a[] = {
-            { 50.0f,    { 0.006f, 0.005f, 0.001f } },
+            { 50.0f,    { 0.006f, 0.012f, 0.008f } },
             { 350.0f,   { 0.000f, 0.003f, 0.010f } },
             { 2400.0f,  { 0.000f, 0.002f, 0.005f } },
-            { 11000.0f, { 0.000f, 0.002f, 0.0005f } },
+            { 11000.0f, { 0.000f, 0.008f, 0.004f } },
         };
         const float lf = std::log (juce::jlimit (a[0].f, a[3].f, centreHz));
         for (int i = 0; i < 3; ++i)
@@ -160,6 +160,75 @@ namespace Dsp
     };
 
     //==========================================================================
+    // Scrape flutter: the tape rubbing the heads. A fast, noisy shiver of level on what sits above ~500 Hz,
+    // its own random per channel, zero on average. Everything the shiver produces below 200 Hz is filtered out,
+    // so the low end stays exactly as it is. No delay line, no latency, the average curve does not move.
+    struct ScrapeFlutter
+    {
+        static constexpr int delay = 0;
+
+        struct HP2   // 2nd-order Butterworth high-pass, TDF-II
+        {
+            float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+            void set (double fs, double fc)
+            {
+                const double w = 2.0 * pi * fc / fs, c = std::cos (w), al = std::sin (w) / std::sqrt (2.0), a0 = 1.0 + al;
+                b0 = (float) ((1.0 + c) / 2.0 / a0); b1 = (float) (-(1.0 + c) / a0); b2 = b0;
+                a1 = (float) (-2.0 * c / a0); a2 = (float) ((1.0 - al) / a0); z1 = z2 = 0;
+            }
+            float operator() (float x) { const float y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
+        };
+
+        void prepare (double sampleRate)
+        {
+            fs = sampleRate;
+            hpN = (float) (1.0 - std::exp (-2.0 * pi * 400.0 / fs));
+            lpN = (float) (1.0 - std::exp (-2.0 * pi * 4000.0 / fs));
+            for (int c = 0; c < 2; ++c)
+            {
+                auto& ch = chans[c];
+                ch = {};
+                ch.rnd.setSeed (777 + c * 31);
+                ch.split.set (fs, 500.0);  ch.split2.set (fs, 500.0);
+                ch.clean.set (fs, 200.0);  ch.clean2.set (fs, 200.0);
+            }
+        }
+
+        // amount: 0 = new tape, 1 = AGE full in MASTER, 2 = AGE full in MIX
+        void process (float* l, float* r, int n, float amount)
+        {
+            if (amount <= 0.0f && ! ringing) return;
+            ringing = amount > 0.0f;
+            const float rip = amount * 0.06f;
+            float* io[2] { l, r };
+            for (int c = 0; c < 2; ++c)
+            {
+                auto& ch = chans[c];
+                for (int i = 0; i < n; ++i)
+                {
+                    const float x = io[c][i];
+                    const float hi = ch.split2 (ch.split (x));
+                    // band-limited noise 400 Hz - 4 kHz: the scrape
+                    const float w = ch.rnd.nextFloat() * 2.0f - 1.0f;
+                    ch.h += hpN * (w - ch.h);
+                    ch.lp += lpN * ((w - ch.h) - ch.lp);
+                    const float a = juce::jlimit (-1.0f, 1.0f, ch.lp * 2.5f);
+                    const float delta = ch.clean2 (ch.clean (hi * rip * a));
+                    io[c][i] = x + delta;
+                }
+            }
+        }
+
+    private:
+        struct Chan { juce::Random rnd; HP2 split, split2, clean, clean2; float h = 0, lp = 0; };
+        Chan chans[2];
+        double fs = 48000.0;
+        float hpN = 0, lpN = 0;
+        bool ringing = false;
+    };
+
+
+    //==========================================================================
     // Fast random shimmer (band-limited noise ~3-30 Hz), output roughly -1..1
     struct Shimmer
     {
@@ -196,6 +265,18 @@ namespace Dsp
         }
         void reset() { tapePrevX = tapePrevY = flux = 0; }
 
+        static inline float tube (float u)
+        {
+            if (u >= 0.0f) return u / std::sqrt (1.0f + u * u);                          // soft
+            const float u2 = u * u, u4 = u2 * u2;
+            return u / std::sqrt (std::sqrt (std::sqrt (1.0f + u4 * u4)));                // firmer knee
+        }
+        static inline float tubeSlope (float u)                                           // d tube / du (u >= 0)
+        {
+            const float q = 1.0f + u * u;
+            return 1.0f / (q * std::sqrt (q));
+        }
+
         // In series, like a real chain: tube -> tape -> transformer.
         // gTube, bTube: tube drive and bias; gTape: tape drive; tXf: transformer amount;
         // jitter: fast tiny wobble of the harmonics only (the clean signal is not touched by it)
@@ -204,8 +285,11 @@ namespace Dsp
             float y = x;
             if (gTube > 1.0e-4f)
             {
-                const float s = std::tanh (gTube * bTube);
-                y = (std::tanh (gTube * (y + bTube)) - s) / (gTube * (1.0f - s * s));
+                // triode-like: soft on one half, a firmer knee on the other (grid conduction).
+                // The firmer knee is what gives the long, dense series of harmonics.
+                const float u0 = gTube * bTube;
+                const float y0 = tube (u0), slope = tubeSlope (u0);
+                y = (tube (gTube * (y + bTube)) - y0) / (gTube * slope);
             }
             if (gTape > 1.0e-4f)
             {

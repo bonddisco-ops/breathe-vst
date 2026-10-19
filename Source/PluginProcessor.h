@@ -65,7 +65,8 @@ private:
     bool linear = true;
     int osLatency = 0;
     void configure (int ovs, bool lin);
-    int totalLatency() const { return (linear ? splitter.latency() : 0) + osLatency; }
+    int totalLatency() const { return (linear ? splitter.latency() : 0) + osLatency + Dsp::ScrapeFlutter::delay; }
+    Dsp::ScrapeFlutter flutter;
 
     // ---- minimum-phase crossovers (Linkwitz-Riley 24 dB/oct with phase compensation)
     juce::dsp::LinkwitzRileyFilter<float> split1, split2, split3, comp1, comp3, dryAp1, dryAp2, dryAp3;
@@ -94,7 +95,7 @@ private:
         Dsp::Recipe recipe {};
     } bands[4];
 
-    juce::AudioBuffer<float> bandBuf[4], dryBuf, wetBuf, apBuf, eqBuf;
+    juce::AudioBuffer<float> bandBuf[4], dryBuf, wetBuf, apBuf;
     std::vector<float> gTubeA[2], bTubeA[2], gTapeA[2], tXfA[2], jitA[2], inGainA;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> rawDelay { 1 << 16 }, apDelay { 1 << 16 }, bandDelay[4];
 

@@ -56,7 +56,7 @@ namespace Params
 
         l.add (std::make_unique<AudioParameterFloat> (ParameterID { mix, 1 }, "Mix", NormalisableRange<float> (0.0f, 1.0f), 1.0f,
                    AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
-        l.add (std::make_unique<AudioParameterFloat> (ParameterID { age, 1 }, "Age", NormalisableRange<float> (0.0f, 1.0f), 0.4f,
+        l.add (std::make_unique<AudioParameterFloat> (ParameterID { age, 1 }, "Age", NormalisableRange<float> (0.0f, 1.0f), 0.0f,
                    AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
         l.add (std::make_unique<AudioParameterFloat> (ParameterID { output, 1 }, "Output", NormalisableRange<float> (-30.0f, 30.0f), 0.0f,
                    AudioParameterFloatAttributes().withLabel ("dB")

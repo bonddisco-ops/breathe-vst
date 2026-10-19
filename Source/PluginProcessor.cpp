@@ -27,21 +27,18 @@ public:
         float x[3], e[4];
         for (int i = 0; i < 3; ++i) x[i] = proc.xo[i]->load();
         for (int b = 0; b < 4; ++b) e[b] = Dsp::taper (proc.knob[b]->load());
-        const float m = proc.modeP->load();
 
-        bool changed = force || fs != lastRate || m != lastMode;
+        bool changed = force || fs != lastRate;
         for (int i = 0; i < 3; ++i) changed |= std::abs (x[i] - lastX[i]) > 0.01f;
-        for (int b = 0; b < 4; ++b) changed |= std::abs (e[b] - lastE[b]) > 0.0005f;
         if (! changed)
             return {};
 
         lastRate = fs;
-        lastMode = m;
         std::copy (x, x + 3, lastX);
         std::copy (e, e + 4, lastE);
 
         Dsp::KernelSet ks;
-        Dsp::designKernels (ks, fs, x, Dsp::pultec (fs, e, x, Dsp::blend (m).eq));
+        Dsp::designKernels (ks, fs, x, Dsp::pultec (fs, e, x, 0.0f));     // LIN = crossovers only
         return LinPhaseSplitter::makeSpectra (ks, fs);
     }
 
@@ -128,7 +125,6 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
     dryBuf.setSize (2, maxBlock);
     wetBuf.setSize (2, maxBlock);
     apBuf.setSize (2, maxBlock);
-    eqBuf.setSize (2, maxBlock);
     for (int ch = 0; ch < 2; ++ch)
         for (auto* v : { &gTubeA[ch], &bTubeA[ch], &gTapeA[ch], &tXfA[ch], &jitA[ch] })
             v->assign ((size_t) maxBlock, 0.0f);
@@ -160,6 +156,7 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
         ++bi;
     }
     for (auto& st : eq) for (auto& q : st) q.reset();
+    flutter.prepare (sr);
 
     mixS.reset (sr, 0.03);    mixS.setCurrentAndTargetValue (mixP->load());
     outS.reset (sr, 0.03);    outS.setCurrentAndTargetValue (Decibels::decibelsToGain (outP->load()));
@@ -306,31 +303,13 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     }
     else
     {
-        // the Pultec curve sits before the iron in both phase modes, so both sound the same
-        {
-            float e[4];
-            for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue();
-            const auto k = Dsp::pultec (sampleRate, e, xoNow, ms.eq);
-            for (int ch = 0; ch < 2; ++ch)
-            {
-                eqBuf.copyFrom (ch, 0, dryBuf, ch, 0, n);
-                float* d = eqBuf.getWritePointer (ch);
-                for (int st = 0; st < Dsp::pultecStages; ++st)
-                {
-                    const auto& c = k[(size_t) st];
-                    eq[st][ch].k = c;
-                    if (std::abs (c.b0 - 1.0) < 1.0e-9 && std::abs (c.a1) < 1.0e-9 && std::abs (c.b1) < 1.0e-9) { eq[st][ch].reset(); continue; }
-                    for (int i = 0; i < n; ++i) d[i] = eq[st][ch].process (d[i]);
-                }
-            }
-        }
         split1.setCutoffFrequency (xoNow[0]); comp1.setCutoffFrequency (xoNow[0]); dryAp1.setCutoffFrequency (xoNow[0]);
         split2.setCutoffFrequency (xoNow[1]); dryAp2.setCutoffFrequency (xoNow[1]);
         split3.setCutoffFrequency (xoNow[2]); comp3.setCutoffFrequency (xoNow[2]); dryAp3.setCutoffFrequency (xoNow[2]);
         for (int ch = 0; ch < 2; ++ch)
         {
-            const float* x = eqBuf.getReadPointer (ch);
-            const float* xd = dryBuf.getReadPointer (ch);
+            const float* x = dryBuf.getReadPointer (ch);
+            const float* xd = x;
             float* b0 = bandBuf[0].getWritePointer (ch); float* b1 = bandBuf[1].getWritePointer (ch);
             float* b2 = bandBuf[2].getWritePointer (ch); float* b3 = bandBuf[3].getWritePointer (ch);
             float* ap = apBuf.getWritePointer (ch);
@@ -362,6 +341,27 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
             wetBuf.addFromWithRamp (ch, 0, bandBuf[b].getReadPointer (ch), n, g0, target);
     }
 
+    // ---- Pultec curve after the iron and its level return, analog phase in both modes
+    {
+        float e[4];
+        for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue();
+        const auto k = Dsp::pultec (sampleRate, e, xoNow, ms.eq);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            float* d = wetBuf.getWritePointer (ch);
+            for (int st = 0; st < Dsp::pultecStages; ++st)
+            {
+                const auto& c = k[(size_t) st];
+                eq[st][ch].k = c;
+                if (std::abs (c.b0 - 1.0) < 1.0e-9 && std::abs (c.a1) < 1.0e-9 && std::abs (c.b1) < 1.0e-9) { eq[st][ch].reset(); continue; }
+                for (int i = 0; i < n; ++i) d[i] = eq[st][ch].process (d[i]);
+            }
+        }
+    }
+
+    // ---- AGE: scrape flutter, only on what sits above ~200 Hz
+    flutter.process (wetBuf.getWritePointer (0), wetBuf.getWritePointer (1), n, age * ms.life / Dsp::master.life);
+
     // ---- output: mix, idle path (true bypass when every knob is at zero), output gain, bypass
     const int lat = totalLatency();
     float env = envOut;
@@ -374,12 +374,12 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
         for (int ch = 0; ch < 2; ++ch)
         {
             rawDelay.pushSample (ch, dryBuf.getSample (ch, i));
-            const float raw = lat > 0 ? rawDelay.popSample (ch, (float) lat) : dryBuf.getSample (ch, i);
+            const float raw = rawDelay.popSample (ch, (float) lat);
             float dryMix = raw;
             if (! linear)
             {
                 apDelay.pushSample (ch, apBuf.getSample (ch, i));
-                dryMix = osLatency > 0 ? apDelay.popSample (ch, (float) osLatency) : apBuf.getSample (ch, i);
+                dryMix = apDelay.popSample (ch, (float) (osLatency + Dsp::ScrapeFlutter::delay));
             }
             float y = dryMix + (wetBuf.getSample (ch, i) - dryMix) * m;
             y = raw + (y - raw) * wa;
@@ -493,8 +493,7 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
             // Drive (and so the level) is the same in both channels. The channels differ only in the tube bias:
             // that colours the even harmonics, and its fast shimmer is the "breathing" of the spectrum.
             const float driveMul = 1.0f + 0.15f * B.sag;
-            const float shim = life > 0.0f ? (0.3f + 0.7f * age) * life * B.shimmer[ch].next() : 0.0f;
-            const float biasMul = (1.0f + B.tolBias[ch] * (0.5f + age)) * (1.0f + 0.5f * B.sag) * (1.0f + jlimit (-0.9f, 2.0f, shim));
+            const float biasMul = (1.0f + B.tolBias[ch] * (0.5f + age)) * (1.0f + 0.5f * B.sag);
             jitA[ch][(size_t) i] = 0.0f;
             gTubeA[ch][(size_t) i] = kTube * se * driveMul;
             bTubeA[ch][(size_t) i] = baseBias * biasMul;
