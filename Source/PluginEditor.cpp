@@ -347,6 +347,12 @@ String BreatheEditor::getTooltip()
     if (! helpOn || tour.isVisible() || welcome.isVisible() || dragKnob >= 0 || dragXo >= 0) return {};
     const auto key = hitKey (mouse);
     if (key == "master" || key == "mixMode") return Help::tip ("mode", lang);
+    if (key == "age")
+    {
+        bool off = false;
+        for (int b = 0; b < 4; ++b) off |= flag (soloParam[b]) || flag (muteParam[b]);
+        if (off) return Help::tip ("age", lang) + "\n\n" + Help::tip ("ageOff", lang);
+    }
     if (key == "tabEq" || key == "tabDyn" || key == "advThr") return Help::tip (key == "advThr" ? "advComp" : "advScreen", lang);
     return key.isEmpty() ? String() : Help::tip (key.toRawUTF8(), lang);
 }
@@ -697,7 +703,9 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
     const float on = byp ? 0.25f : 1.0f, dim = (k < 4 && ! audible (k)) ? 0.35f : 1.0f;
     const float dd = r * (d.big ? 0.24f : 0.28f), cap = r * 0.8f;
     const bool bipolar = k == 6 || k == 7;
-    const Colour acc = k == 7 ? inColour() : t.accent;
+    bool ageOff = false;
+    if (k == 5) for (int b = 0; b < 4; ++b) ageOff |= flag (soloParam[b]) || flag (muteParam[b]);
+    const Colour acc = k == 7 ? inColour() : ageOff ? t.mute.withAlpha (0.45f) : t.accent;
     const float px = scale() * physScale;
     auto& c = knobCache[k];
     if (! c.base.isValid() || c.px != px || c.theme != t.name)
@@ -1377,7 +1385,7 @@ void BreatheEditor::tick (double dt)
     String sig;
     for (int k = 0; k < numKnobs; ++k) sig << String (value (k), 4) << ",";
     for (int i = 0; i < 3; ++i) sig << String (xoFreq (i), 1) << ",";
-    for (int b = 0; b < 4; ++b) sig << (audible (b) ? "1" : "0");
+    for (int b = 0; b < 4; ++b) sig << (audible (b) ? "1" : "0") << (flag (soloParam[b]) ? "s" : "") << (flag (muteParam[b]) ? "m" : "");
     shownInLevel += (proc.inLevelDb.load() - shownInLevel) * jmin (1.0f, fdt * 6.0f);
     sig << hoverKnob << dragKnob << (bypassed() ? "B" : "b") << look.theme().name << inColour().toString();
     if (sig != knobSignature)

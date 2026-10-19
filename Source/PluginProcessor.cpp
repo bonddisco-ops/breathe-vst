@@ -395,7 +395,15 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     }
 
     // ---- AGE: scrape flutter, only on what sits above ~200 Hz
-    flutter.process (wetBuf.getWritePointer (0), wetBuf.getWritePointer (1), n, age * ms.life / Dsp::master.life);
+    //      (off while any band is soloed or muted, so a band can be judged without the flutter)
+    {
+        bool anyMute = false;
+        for (int b = 0; b < 4; ++b) anyMute |= muteP[b]->load() > 0.5f;
+        const float gateT = (anySolo || anyMute) ? 0.0f : 1.0f;
+        ageGate += (gateT - ageGate) * (float) jmin (1.0, (double) n / (0.05 * sampleRate));
+        if (std::abs (ageGate - gateT) < 1.0e-3f) ageGate = gateT;
+    }
+    flutter.process (wetBuf.getWritePointer (0), wetBuf.getWritePointer (1), n, age * ageGate * ms.life / Dsp::master.life);
 
     // ---- output: mix, idle path (true bypass when every knob is at zero), output gain, bypass
     const int lat = totalLatency();

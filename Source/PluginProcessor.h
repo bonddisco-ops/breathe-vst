@@ -109,7 +109,7 @@ private:
     Dsp::Biquad eq[Dsp::pultecStages][2];
 
     juce::SmoothedValue<float> mixS, outS, bypassS, wetActiveS, inS, modeS;
-    float envOut = 0.0f;
+    float envOut = 0.0f, ageGate = 1.0f;     // AGE fades out while any band is soloed or muted
     double inPow = 0.0;
 
     void processChunk (float* const* io, int numCh, int n);

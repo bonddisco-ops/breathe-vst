@@ -39,6 +39,8 @@ namespace Help
                  "Баланс сухого и обработанного сигнала. Сухой путь выровнен по задержке и фазе, поэтому смешивание не вызывает гребенчатой фильтрации." },
         { "age", "AGE: tape scrape flutter. Fast, noise-like amplitude modulation above roughly 500 Hz, decorrelated between channels and zero-mean. Modulation products below 200 Hz are filtered out.",
                  "AGE: скрейп-флаттер ленты. Быстрая шумовая амплитудная модуляция выше ~500 Гц, некоррелированная между каналами и с нулевым средним. Продукты модуляции ниже 200 Гц отфильтрованы." },
+        { "ageOff", "AGE is bypassed while any band is soloed or muted, so the band can be judged without the flutter.",
+                    "Пока включено Solo или Mute любой полосы, AGE отключён, чтобы флаттер не мешал оценивать полосу." },
         { "output", "Output gain, -30 to +30 dB.", "Выходное усиление, от -30 до +30 дБ." },
         { "in", "IN: gain into the saturation stages, -30 to +30 dB, compensated at the output. The ring shows the RMS level at the input of the stages: dim - below the working range, theme colour - working range (-24 to -12 dB RMS), red - overdriven.",
                 "IN: усиление на входе каскадов насыщения, от -30 до +30 дБ, с компенсацией на выходе. Кольцо показывает RMS-уровень на входе каскадов: бледное — ниже рабочего диапазона, цвет темы — рабочий диапазон (от -24 до -12 дБ RMS), красное — перегрузка." },

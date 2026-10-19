@@ -529,6 +529,24 @@ int main (int argc, char** argv)
             check (a1[2] < a0[2] + 6.0f || a1[2] < -100.0f, "AGE adds nothing at 60 Hz");
             if (f > 5000) check (a1[0] > a0[0] + 20.0f, "AGE makes the top shiver");
         }
+        // with a band soloed (or muted) AGE is out of the way
+        for (int sm = 0; sm < 2; ++sm)
+        {
+            defaults (p, true, 1);
+            for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 0.3f);
+            setP (p, sm == 0 ? Params::solo[3] : Params::mute[0], 1.0f);
+            float sk[2];
+            for (int k = 0; k < 2; ++k)
+            {
+                setP (p, Params::age, k == 0 ? 0.0f : 1.0f);
+                prepare (p);
+                auto o = run (p, sine (10000.0f, 3.0f, 0.1f));
+                const float h1 = harmonic (o, 0, 96000, 48000, 10000.0f), v = harmonic (o, 0, 96000, 48000, 10000.0f - 830.0f);
+                sk[k] = Decibels::gainToDecibels (v / h1, -200.0f);
+            }
+            std::cout << "== AGE with " << (sm == 0 ? "Solo" : "Mute") << " on: skirt at AGE 0 / 100 = " << String (sk[0], 1) << " / " << String (sk[1], 1) << " dB\n";
+            check (sk[1] < sk[0] + 3.0f, String ("AGE is off while a band is ") + (sm == 0 ? "soloed" : "muted"));
+        }
     }
 
     // ---------------------------------------------------------------- Advanced trims
