@@ -39,6 +39,7 @@ public:
 
     static constexpr int baseW = 1180, baseH = 560, stripH = 34, advH = 360, headerH = 40, splitH = 250;
     void setSplit (bool on);
+    void paintOneKnobMock (juce::Graphics&);          // design preview of the one-knob edition (square, 640 x 640)
     juce::String hitKeyForTest (juce::Point<float> p) const { return hitKey (p); }
     void setSideForTest (int s) { side = advSide = s; remap(); }
     void setAdvancedOpen (bool open);

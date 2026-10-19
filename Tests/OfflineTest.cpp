@@ -184,6 +184,28 @@ int main (int argc, char** argv)
         }
         return 0;
     }
+    if (argc > 2 && String (argv[2]) == "oneknob")
+    {
+        defaults (p, true, 1);
+        for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 0.62f);
+        setP (p, Params::mix, 0.8f); setP (p, Params::age, 0.25f);
+        prepare (p);
+        auto in = noise (0.5f, 0.25f, 3);
+        for (const auto& th : Theme::all())
+        {
+            p.apvts.state.setProperty ("theme", th.name, nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (p.createEditor()));
+            ed->applyTheme (th.name);
+            ed->hideWelcomeForTest();
+            for (int i = 0; i < 4; ++i) { auto blk = run (p, in); ed->renderForTest (0.5); }
+            Image img (Image::RGB, 1280, 1280, true);
+            { Graphics g (img); g.addTransform (AffineTransform::scale (2.0f)); ed->paintOneKnobMock (g); }
+            File f = outDir.getChildFile ("oneknob_" + th.name + ".png");
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        }
+        return 0;
+    }
     if (argc > 2 && String (argv[2]) == "keys")
     {
         std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (p.createEditor()));

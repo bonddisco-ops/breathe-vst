@@ -2555,6 +2555,162 @@ void BreatheEditor::drawLiftScreen (Graphics& g, Rectangle<float> sR, int b)
     g.drawText ("+" + String (liftShown, 1) + " dB", Rectangle<float> (m.getCentreX() - 40, y + 8, 80, 14), Justification::centred);
 }
 
+
+//==============================================================================
+// Design preview: the one-knob edition, drawn with the same parts as the main plug-in
+void BreatheEditor::paintOneKnobMock (Graphics& g)
+{
+    const auto& t = look.theme();
+    const float S = 640.0f, mid = S * 0.5f;
+    const Colour pc = panelColour (t);
+    Random r (4321);
+    {
+        ColourGradient body (mixWith (pc, 0.14f), 0, 0, mixWith (pc, -0.28f), 0, S, false);
+        body.addColour (0.35, mixWith (pc, 0.03f));
+        g.setGradientFill (body);
+        g.fillRect (0.0f, 0.0f, S, S);
+    }
+    g.setTiledImageFill (grainTile, 0, 0, 1.0f);
+    g.fillRect (0.0f, 0.0f, S, S);
+    for (int i = 0; i < 600; ++i)
+    {
+        const float y = r.nextFloat() * S, x0 = r.nextFloat() * S, len = 60.0f + r.nextFloat() * 240.0f;
+        g.setColour ((r.nextFloat() < 0.55f ? Colours::white : Colours::black).withAlpha (t.lightBg ? 0.06f : 0.05f));
+        g.drawLine (x0, y, jmin (S, x0 + len), y, 0.2f + r.nextFloat() * 0.8f);
+    }
+    {
+        ColourGradient hot (Colours::white.withAlpha (t.lightBg ? 0.10f : 0.13f), mid, -40.0f, Colours::white.withAlpha (0.0f), mid, 520.0f, true);
+        g.setGradientFill (hot);
+        g.fillRect (0.0f, 0.0f, S, S);
+        ColourGradient vig (Colours::transparentBlack, mid, S * 0.45f, t.lightBg ? Colour ((uint8) 90, 40, 0, 0.3f) : Colours::black.withAlpha (0.5f), mid + 460.0f, S * 0.5f, true);
+        g.setGradientFill (vig);
+        g.fillRect (0.0f, 0.0f, S, S);
+    }
+    g.setColour (Colours::white.withAlpha (0.16f)); g.fillRect (0.0f, 0.0f, S, 1.5f);
+    g.setColour (Colours::black.withAlpha (0.6f));  g.fillRect (0.0f, S - 2.0f, S, 2.0f);
+    for (auto pt : { Point<float> (20, 20), Point<float> (S - 20, 20), Point<float> (20, S - 20), Point<float> (S - 20, S - 20) })
+        screw (g, pt.x, pt.y, r);
+
+    // logo and name
+    {
+        const auto la = Rectangle<float> (40.0f, 30.0f, 46.0f, 48.0f);
+        const auto tr = RectanglePlacement (RectanglePlacement::centred).getTransformToFit (Logo::viewBox, la);
+        Path lp (Logo::path());
+        lp.applyTransform (tr);
+        g.setColour (Colours::black.withAlpha (0.6f));
+        g.fillPath (lp, AffineTransform::translation (0.0f, 1.3f));
+        DropShadow (t.logo.withAlpha (0.55f), 12, {}).drawForPath (g, lp);
+        g.setColour (t.logo);
+        g.fillPath (lp);
+    }
+    const Colour nameCol = t.lightBg ? Colour (0xff1e1300) : Colours::white;
+    g.setFont (uiFont (28.0f, true, 0.04f));
+    g.setColour (Colours::black.withAlpha (0.6f));
+    g.drawText ("BREATHE", Rectangle<float> (96, 33, 300, 30), Justification::centredLeft);
+    g.setColour (nameCol);
+    g.drawText ("BREATHE", Rectangle<float> (96, 30, 300, 30), Justification::centredLeft);
+    const Font labelFont = uiFont (10.5f, true, 0.28f);
+    engrave (g, t, "PRIMAL RAGE LAB", 98, 70, labelFont, Justification::centredLeft, t.mute);
+    // gear (settings)
+    {
+        const float x = S - 58.0f, y = 50.0f, rr = 15.0f;
+        DropShadow (Colours::black.withAlpha (0.65f), 6, { 1, 4 }).drawForPath (g, [&] { Path p; p.addEllipse (x - rr, y - rr, rr * 2, rr * 2); return p; }());
+        g.setGradientFill (ColourGradient (Colour (0xff3a3a40), x, y - rr, Colour (0xff141416), x, y + rr, false));
+        g.fillEllipse (x - rr, y - rr, rr * 2, rr * 2);
+        g.setColour (Colours::white.withAlpha (0.12f)); g.drawEllipse (x - rr, y - rr, rr * 2, rr * 2, 1.0f);
+        Path gp;
+        for (int i = 0; i < 16; ++i)
+        {
+            const float a = (float) i / 16.0f * pi * 2.0f, a2 = a + pi / 8.0f, q = (i % 2 == 0) ? 8.0f : 5.8f;
+            const Point<float> p1 (x + q * std::cos (a), y + q * std::sin (a)), p2 (x + q * std::cos (a2), y + q * std::sin (a2));
+            if (i == 0) gp.startNewSubPath (p1); else gp.lineTo (p1);
+            gp.lineTo (p2);
+        }
+        gp.closeSubPath();
+        g.setColour (Colours::black.withAlpha (0.7f)); g.fillPath (gp);
+        g.setColour (Colour (0xff2a2a2e)); g.fillEllipse (x - 2.5f, y - 2.5f, 5, 5);
+    }
+
+    // ANALOG COLOR / PROCESSOR, both lines the same width
+    {
+        GlyphArrangement a1;
+        a1.addLineOfText (labelFont, "ANALOG COLOR", 0.0f, 0.0f);
+        const float ink1 = a1.getGlyph (a1.getNumGlyphs() - 1).getRight() - a1.getGlyph (0).getLeft() - labelFont.getHeight() * 0.28f;
+        a1.moveRangeOfGlyphs (0, -1, mid - ink1 * 0.5f - a1.getGlyph (0).getLeft(), 118.0f);
+        const Font plain = uiFont (10.5f, true);
+        const String l2 = "PROCESSOR";
+        float widths[16] {}, sum = 0.0f;
+        for (int i = 0; i < l2.length(); ++i) { widths[i] = GlyphArrangement::getStringWidth (plain, l2.substring (i, i + 1)); sum += widths[i]; }
+        const float gap = (ink1 - sum) / (float) (l2.length() - 1);
+        GlyphArrangement a2;
+        float xx = mid - ink1 * 0.5f;
+        for (int i = 0; i < l2.length(); ++i) { a2.addLineOfText (plain, l2.substring (i, i + 1), xx, 133.0f); xx += widths[i] + gap; }
+        for (auto* a : { &a1, &a2 })
+        {
+            g.setColour (t.lightBg ? Colours::white.withAlpha (0.4f) : Colours::black.withAlpha (0.75f));
+            a->draw (g, AffineTransform::translation (0.0f, 1.0f));
+            g.setColour (nameCol);
+            a->draw (g);
+        }
+    }
+
+    // knob statics (scale dots, groove, names) for knob k drawn around its own centre
+    auto statics = [&] (int k, bool withName)
+    {
+        const auto& d = knobDefs[k];
+        const int n = d.big ? 11 : 7;
+        const float R = d.r + (d.big ? 27.0f : 15.0f);
+        g.setColour (t.lightBg ? Colour ((uint8) 40, 20, 0, 0.6f) : Colours::white.withAlpha (0.45f));
+        for (int i = 0; i < n; ++i)
+        {
+            const float a = -pi * 0.75f + (float) i / (float) (n - 1) * pi * 1.5f - pi * 0.5f;
+            const float rr = d.big ? 2.2f : 1.5f;
+            g.fillEllipse (d.x + std::cos (a) * R - rr, d.y + std::sin (a) * R - rr, rr * 2, rr * 2);
+        }
+        const float RG = d.r + (d.big ? 15.0f : 8.0f);
+        Path groove;
+        groove.addCentredArc (d.x, d.y, RG, RG, 0.0f, -pi * 0.75f, pi * 0.75f, true);
+        g.setColour (Colours::black.withAlpha (0.65f));
+        g.strokePath (groove, PathStrokeType (d.big ? 9.0f : 5.0f));
+        if (d.big)
+        {
+            engrave (g, t, "0", d.x - R * 0.8f, d.y + R * 0.86f, uiFont (10.0f), Justification::centred, t.mute, 40);
+            engrave (g, t, "MAX", d.x + R * 0.8f, d.y + R * 0.86f, uiFont (10.0f), Justification::centred, t.mute, 40);
+        }
+        else if (withName)
+            engrave (g, t, d.name, d.x, d.y + 46, uiFont (10.0f, true, 0.05f), Justification::centred, t.ink, 100);
+    };
+    auto place = [&] (int k, float x, float y, float sc)
+    {
+        const auto& d = knobDefs[k];
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::translation (-d.x, -d.y).scaled (sc).translated (x, y));
+        statics (k, true);
+        drawKnob (g, k, false);
+    };
+    const float ky = 318.0f;
+    place (3, mid, ky, 1.55f);
+    // IN / OUT meters either side
+    for (int side = 0; side < 2; ++side)
+    {
+        const float mx = side == 0 ? 92.0f : S - 92.0f;
+        Graphics::ScopedSaveState ss (g);
+        const float mc = (meterTop + meterBot) * 0.5f, sc = 1.3f;
+        g.addTransform (AffineTransform::translation (-mx, -mc).scaled (sc).translated (mx, ky));
+        drawMeter (g, mx, meterL[side], peakL[side]);
+        const Font small = uiFont (9.0f), bold10 = uiFont (10.0f, true);
+        engrave (g, t, side == 0 ? "IN" : "OUT", mx, meterTop - 14, bold10, Justification::centred, t.mute, 40);
+        for (int db : { 6, 0, -6, -12, -24, -48 })
+        {
+            const String s2 = db > 0 ? "+" + String (db) : String (db);
+            engrave (g, t, s2, side == 0 ? mx + 18 : mx - 18, meterY ((float) db), small, side == 0 ? Justification::centredLeft : Justification::centredRight, t.mute, 30);
+        }
+    }
+    // AGE and MIX
+    place (5, mid - 150.0f, 548.0f, 1.25f);
+    place (4, mid + 150.0f, 548.0f, 1.25f);
+}
+
 //==============================================================================
 void BreatheEditor::showAbout()
 {
