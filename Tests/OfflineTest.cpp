@@ -164,6 +164,34 @@ int main (int argc, char** argv)
         return 0;
     }
 
+    if (argc > 2 && String (argv[2]) == "themes")
+    {
+        defaults (p, true, 1);
+        setP (p, Params::band[0], 0.5f); setP (p, Params::band[3], 0.7f);
+        prepare (p);
+        auto in = noise (0.5f, 0.3f, 3);
+        for (const auto& th : Theme::all())
+        {
+            p.apvts.state.setProperty ("theme", th.name, nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (p.createEditor()));
+            ed->applyTheme (th.name);
+            ed->hideWelcomeForTest();
+            for (int i = 0; i < 4; ++i) { auto blk = run (p, in); ed->renderForTest (0.5); }
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            File f = outDir.getChildFile ("theme_" + th.name + ".png");
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        }
+        return 0;
+    }
+    if (argc > 2 && String (argv[2]) == "keys")
+    {
+        std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (p.createEditor()));
+        ed->hideWelcomeForTest();
+        for (auto pt : { Point<float> (1095, 46), Point<float> (1095, 40), Point<float> (1100, 50) })
+            std::cout << pt.toString() << " -> '" << ed->hitKeyForTest (pt) << "'\n";
+        return 0;
+    }
     if (argc > 2 && String (argv[2]) == "mock")
     {
         // every state the header / split mockup can show, rendered by the real editor

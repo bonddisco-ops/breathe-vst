@@ -49,6 +49,7 @@ namespace Help
         { "bypass", "Bypass with latency preserved: switching is time-aligned and click-free.",
                     "Bypass с сохранением задержки: переключение выровнено по времени и происходит без щелчков." },
         { "gear", "Settings: theme, hints, hint language, tour, window size.", "Настройки: тема, подсказки, язык подсказок, обучающий тур, размер окна." },
+        { "settings", "Settings: theme, hints, hint language, tour, window size, about.", "Настройки: тема, подсказки, язык подсказок, обучающий тур, размер окна, о плагине." },
         { "power", "Power: processing on or off (latency preserved, so switching is time-aligned).", "Power: обработка включена или выключена (задержка сохраняется, переключение выровнено по времени)." },
         { "undo", "Undo the last change.", "Отменить последнее изменение." },
         { "redo", "Redo the change that was undone.", "Вернуть отменённое изменение." },

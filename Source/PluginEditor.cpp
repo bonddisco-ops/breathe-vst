@@ -455,7 +455,7 @@ Rectangle<float> BreatheEditor::tourTarget (const String& n)
     else if (n == "in") r = Rectangle<float> (knobDefs[7].x - 40, knobDefs[7].y - 40, 80, 100).translated (0.0f, splitOff());
     else if (n == "mode") r = Rectangle<float> (masterC.x - 34, masterC.y - 14, 104, 28).translated (0.0f, tubeOff());
     else if (n == "bypass") r = Rectangle<float> (8, -40, 44, 40);
-    else if (n == "gear") r = Rectangle<float> (gearC.x - 24, gearC.y - 24, 48, 48);
+    else if (n == "gear") r = Rectangle<float> (1134.0f, -(float) headerH, 36.0f, (float) headerH);
     else if (n == "adv") r = Rectangle<float> (492, stripY() - 1 + splitOff(), 196, 36);
     return r * s + origin();   // body space
 }
@@ -1877,7 +1877,8 @@ void BreatheEditor::showGearMenu()
     m.addItem ("Reset window size", [this] { prefW = baseW; fitWindow(); });
     m.addSeparator();
     m.addItem ("About Breathe", [this] { showAbout(); });
-    m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (toPixels (Rectangle<float> (gearC.x - 18, gearC.y - 18, 36, 36)))));
+    const auto at = mouse.y < 0.0f ? Rectangle<float> (1137.0f, -(float) headerH, 30.0f, (float) headerH) : Rectangle<float> (gearC.x - 18, gearC.y - 18, 36, 36);
+    m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (toPixels (at))));
 }
 
 //==============================================================================
@@ -2621,9 +2622,9 @@ namespace
         { "copy", 298, 50 }, { "paste", 358, 54 }, { "reset", 424, 54 },
         { "autoOut", 642, 40 }, { "autoIn", 690, 40 },
         { "monM", 742, 26 }, { "monS", 770, 26 }, { "monL", 798, 26 }, { "monR", 826, 26 }, { "monMono", 866, 46 },
-        { "modeMS", 932, 40 }, { "modeLR", 972, 40 },
-        { "sideA", 1026, 26 }, { "link", 1058, 30 }, { "sideB", 1090, 26 },
-        { "split", 1138, 34 },
+        { "modeMS", 918, 40 }, { "modeLR", 958, 40 },
+        { "sideA", 1004, 26 }, { "link", 1036, 30 }, { "sideB", 1068, 26 },
+        { "split", 1112, 34 }, { "settings", 1152, 30 },
     };
 }
 
@@ -2650,6 +2651,7 @@ void BreatheEditor::headerClick (const String& key)
     if (key == "paste") { proc.pasteSettings(); remap(); return; }
     if (key == "reset") { proc.resetAll(); remap(); return; }
     if (key == "split") { setSplit (! split); return; }
+    if (key == "settings") { showGearMenu(); return; }
     if (key == "sideA" || key == "sideB") { side = advSide = key == "sideA" ? 0 : 1; remap(); return; }
     proc.undoManager.beginNewTransaction();
     if (key == "power") toggle (bypassParam);
@@ -2762,6 +2764,8 @@ void BreatheEditor::drawHeader (Graphics& g)
     }
     // channel mode M/S | L/R
     {
+        Graphics::ScopedSaveState shift (g);
+        g.addTransform (AffineTransform::translation (-14.0f, 0.0f));
         const bool ms = procModeParam->getValue() < 0.5f;
         const Rectangle<float> box (912.0f, cy - 11.0f, 80.0f, 22.0f);
         g.setColour (ms ? acc.withAlpha (0.2f) : Colours::transparentBlack); g.fillRoundedRectangle (box.withWidth (40.0f), 4.0f);
@@ -2773,6 +2777,8 @@ void BreatheEditor::drawHeader (Graphics& g)
     }
     // side A | link | side B
     {
+        Graphics::ScopedSaveState shift (g);
+        g.addTransform (AffineTransform::translation (-22.0f, 0.0f));
         const bool ms = procModeParam->getValue() < 0.5f, lk = linked();
         for (int i = 0; i < 2; ++i)
         {
@@ -2792,8 +2798,25 @@ void BreatheEditor::drawHeader (Graphics& g)
     // split
     {
         Path p;
-        p.addRoundedRectangle (1126.0f, cy - 9.0f, 24.0f, 7.5f, 2.5f);
-        p.addRoundedRectangle (1126.0f, cy + 1.5f, 24.0f, 7.5f, 2.5f);
+        p.addRoundedRectangle (1100.0f, cy - 9.0f, 24.0f, 7.5f, 2.5f);
+        p.addRoundedRectangle (1100.0f, cy + 1.5f, 24.0f, 7.5f, 2.5f);
         stroke (p, colFor (split, true, "split"), split, 1.7f);
+    }
+    // settings: theme, hints, hint language, tour, window size, about
+    {
+        const float gx = 1152.0f, R = 8.5f, r0 = 6.2f;
+        Path p;
+        for (int i = 0; i < 16; ++i)
+        {
+            const float a = (float) i / 16.0f * pi * 2.0f - pi * 0.5f / 8.0f;
+            const float rr = (i % 2 == 0) ? R : r0;
+            const float a2 = a + pi * 2.0f / 16.0f;
+            const Point<float> p1 (gx + rr * std::cos (a), cy + rr * std::sin (a)), p2 (gx + rr * std::cos (a2), cy + rr * std::sin (a2));
+            if (i == 0) p.startNewSubPath (p1); else p.lineTo (p1);
+            p.lineTo (p2);
+        }
+        p.closeSubPath();
+        p.addEllipse (gx - 2.8f, cy - 2.8f, 5.6f, 5.6f);
+        stroke (p, colFor (false, true, "settings"), false, 1.6f);
     }
 }
