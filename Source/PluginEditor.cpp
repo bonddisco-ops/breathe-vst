@@ -446,7 +446,7 @@ Rectangle<float> BreatheEditor::tourTarget (const String& n)
     else if (n == Params::band[2]) r = knobRect (2);
     else if (n == Params::band[3]) r = knobRect (3);
     else if (n == "screen") r = scr.expanded (6.0f).translated (0.0f, splitOff());
-    else if (n == "tube") r = tubeWin.expanded (14.0f).withTop (90.0f).translated (0.0f, tubeOff());
+    else if (n == "tube") r = tubeWin.expanded (14.0f).withTop (62.0f).translated (0.0f, tubeOff());
     else if (n == "ovs") r = Rectangle<float> (ovsC.x - 38, ovsC.y - 14, 76, 28).translated (0.0f, tubeOff());
     else if (n == "lin") r = Rectangle<float> (linC.x - 30, linC.y - 14, 60, 28).translated (0.0f, tubeOff());
     else if (n == "mix") r = Rectangle<float> (knobDefs[4].x - 40, knobDefs[4].y - 40, 80, 100).translated (0.0f, splitOff());
@@ -595,7 +595,19 @@ void BreatheEditor::buildPanel (float phys)
             a2.addLineOfText (plain, l2.substring (i, i + 1), xx, 116.5f);
             xx += widths[i] + gap;
         }
-        for (auto* a : { &a1, &a2 })
+        // line 0: MASTERING, spread to the same width
+        const String l0 = "MASTERING";
+        float w0[16] {}, sum0 = 0.0f;
+        for (int i = 0; i < l0.length(); ++i) { w0[i] = GlyphArrangement::getStringWidth (plain, l0.substring (i, i + 1)); sum0 += w0[i]; }
+        const float gap0 = (ink1 - sum0) / (float) (l0.length() - 1);
+        GlyphArrangement a0;
+        xx = cx - ink1 * 0.5f;
+        for (int i = 0; i < l0.length(); ++i)
+        {
+            a0.addLineOfText (plain, l0.substring (i, i + 1), xx, 86.5f);
+            xx += w0[i] + gap0;
+        }
+        for (auto* a : { &a0, &a1, &a2 })
         {
             g.setColour (t.lightBg ? Colours::white.withAlpha (0.4f) : Colours::black.withAlpha (0.75f));
             a->draw (g, AffineTransform::translation (0.0f, 1.0f));
@@ -606,9 +618,9 @@ void BreatheEditor::buildPanel (float phys)
 
     // centre module groove
     g.setColour (Colours::black.withAlpha (0.6f));
-    g.drawRoundedRectangle (cx - 140, 80, 280, 298, 18, 2.0f);
+    g.drawRoundedRectangle (cx - 140, 66, 280, 312, 18, 2.0f);
     g.setColour (t.lightBg ? Colours::white.withAlpha (0.4f) : Colours::white.withAlpha (0.08f));
-    g.drawRoundedRectangle (cx - 139, 81.5f, 280, 298, 18, 1.0f);
+    g.drawRoundedRectangle (cx - 139, 67.5f, 280, 312, 18, 1.0f);
 
     // tube window bezel
     {
@@ -1527,7 +1539,7 @@ void BreatheEditor::tick (double dt)
         }
     }
 
-    repaint (toPixels (Rectangle<float> (cx - 142, 78, 284, 302).translated (0.0f, tubeOff())));
+    repaint (toPixels (Rectangle<float> (cx - 142, 64, 284, 316).translated (0.0f, tubeOff())));
     repaint (toPixels (scr.expanded (6).translated (0.0f, splitOff())));
 
     // Advanced panel: which screen, its scope data, repaint
@@ -2588,7 +2600,7 @@ void AboutOverlay::paint (Graphics& g)
     g.drawText ("BREATHE", Rectangle<float> (card.getX(), card.getY() + 110.0f * s, card.getWidth(), 40.0f * s), Justification::centred);
     g.setFont (uiFont (11.0f * s, true, 0.3f));
     g.setColour (Colour (0xffcfcfd4));
-    g.drawText ("ANALOG COLOR PROCESSOR", Rectangle<float> (card.getX(), card.getY() + 152.0f * s, card.getWidth(), 18.0f * s), Justification::centred);
+    g.drawText ("MASTERING ANALOG COLOR PROCESSOR", Rectangle<float> (card.getX(), card.getY() + 152.0f * s, card.getWidth(), 18.0f * s), Justification::centred);
 
     float yy = card.getY() + 190.0f * s;
     g.setFont (uiFont (12.5f * s));
