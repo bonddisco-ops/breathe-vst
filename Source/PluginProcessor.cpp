@@ -49,10 +49,11 @@ private:
 };
 
 //==============================================================================
-BreatheProcessor::BreatheProcessor()
+BreatheProcessor::BreatheProcessor (bool oneKnobEdition)
     : AudioProcessor (BusesProperties().withInput ("Input", AudioChannelSet::stereo(), true)
                                        .withOutput ("Output", AudioChannelSet::stereo(), true)),
-      apvts (*this, &undoManager, "BREATHE", Params::layout())
+      oneKnob (oneKnobEdition),
+      apvts (*this, &undoManager, "BREATHE", Params::layout (oneKnobEdition))
 {
     for (int b = 0; b < 4; ++b)
     {
@@ -81,6 +82,15 @@ BreatheProcessor::BreatheProcessor()
     autoInP = apvts.getRawParameterValue (Params::autoIn);
     monitorP = apvts.getRawParameterValue (Params::monitor);
     autoOutP = apvts.getRawParameterValue (Params::autoOut);
+
+    if (oneKnob)
+    {
+        // one knob turns every band at once; the rest is fixed: MIX intensity, analog phase, 2x, linked, no IN / OUTPUT offset
+        auto* a = apvts.getRawParameterValue (Params::amount);
+        for (int b = 0; b < 4; ++b) { knob[b] = a; knob2[b] = a; }
+        modeP = &constOne; ovsP = &constOne; linP = &constZero; linkP = &constOne; procModeP = &constZero;
+        inP = &constZero; outP = &constZero;
+    }
 
     // every unit is a little different: fixed part tolerances per channel (not on the low band: mono bass stays mono)
     Random r (Time::currentTimeMillis());
@@ -826,4 +836,4 @@ void BreatheProcessor::resetAll()
             rp->setValueNotifyingHost (rp->getDefaultValue());
 }
 
-AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new BreatheProcessor(); }
+AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new BreatheProcessor (BREATHE_ONE); }

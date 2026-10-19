@@ -5,10 +5,14 @@
 #include "LinConv.h"
 #include "Params.h"
 
+#ifndef BREATHE_ONE
+ #define BREATHE_ONE 0     // 1 = the one-knob edition (Breathe Analog Color)
+#endif
+
 class BreatheProcessor : public juce::AudioProcessor
 {
 public:
-    BreatheProcessor();
+    explicit BreatheProcessor (bool oneKnobEdition = BREATHE_ONE);
     ~BreatheProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -34,6 +38,7 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
+    const bool oneKnob;            // one-knob edition: AMOUNT drives every band, MIX intensity, analog phase, 2x, linked
     juce::UndoManager undoManager;
     juce::AudioProcessorValueTreeState apvts;
 
@@ -80,6 +85,7 @@ private:
     std::atomic<float>* advEq2P[4] {}, *advDrive2P[4] {}, *advDyn2P[4] {};
     std::atomic<float> *linkP = nullptr, *procModeP = nullptr;
     bool linked = true, procMs = true;
+    std::atomic<float> constZero { 0.0f }, constOne { 1.0f };   // fixed settings of the one-knob edition
     std::atomic<float> *autoInP = nullptr, *autoOutP = nullptr;
     // AUTO IN: slow input level -> gain that puts the iron at its working level; AUTO OUT: loudness match
     double autoInPow = 0.0158, autoOutIn = 1.0e-6, autoOutOut = 1.0e-6;   // 0.0158 = -18 dB RMS

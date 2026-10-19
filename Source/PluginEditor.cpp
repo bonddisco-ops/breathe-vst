@@ -198,6 +198,12 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
     monitorParam = proc.apvts.getParameter (Params::monitor);
     autoInParam = proc.apvts.getParameter (Params::autoIn);
     autoOutParam = proc.apvts.getParameter (Params::autoOut);
+    if (proc.oneKnob)
+    {
+        amountParam = proc.apvts.getParameter (Params::amount);
+        advOpen = split = false;
+        splitAnim = 0.0f;
+    }
     remap();
 
     const auto themeName = proc.apvts.state.getProperty ("theme", loadSetting ("theme", "Asphalt")).toString();
@@ -234,17 +240,17 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
             }
     }
 
-    const int w = (int) proc.apvts.state.getProperty ("uiW", loadSetting ("w", String (baseW)).getIntValue());
+    const int w = (int) proc.apvts.state.getProperty ("uiW", proc.oneKnob ? oneW : loadSetting ("w", String (baseW)).getIntValue());
     setResizable (true, true);
     applySizeLimits();
     ready = true;
-    prefW = jlimit (944, 2360, w);
+    prefW = proc.oneKnob ? jlimit (400, 1600, w) : jlimit (944, 2360, w);
     fitWindow();
 
     lastTick = Time::getMillisecondCounterHiRes() * 0.001;
     startTimerHz (40);
 
-    if (loadSetting ("tour", "") != "never" && ! askedThisRun)
+    if (! proc.oneKnob && loadSetting ("tour", "") != "never" && ! askedThisRun)
     {
         askedThisRun = true;
         welcome.setVisible (true);
@@ -282,7 +288,7 @@ void BreatheEditor::resized()
     {
         prefW = getWidth();
         proc.apvts.state.setProperty ("uiW", getWidth(), nullptr);
-        saveSetting ("w", String (getWidth()));
+        if (! proc.oneKnob) saveSetting ("w", String (getWidth()));
     }
     tour.setBounds (getLocalBounds());
     welcome.setBounds (getLocalBounds());
@@ -345,6 +351,15 @@ Point<float> BreatheEditor::smButton (int b, bool isMute) const
 
 int BreatheEditor::knobAt (Point<float> p) const
 {
+    if (proc.oneKnob)
+    {
+        for (int k : { 3, 4, 5 })
+        {
+            const auto o = oneKnob (k);
+            if (p.getDistanceFrom ({ o.x, o.y }) < (knobDefs[k].r + 8.0f) * o.s) return k;
+        }
+        return -1;
+    }
     for (int k = 0; k < numKnobs; ++k)
     {
         if (k >= 8 && ! (split && splitAnim >= 1.0f)) break;
@@ -373,6 +388,18 @@ Rectangle<float> BreatheEditor::knobArea (int k) const
 String BreatheEditor::hitKey (Point<float> p) const
 {
     if (p.y < 0.0f) return headerKeyAt (p.translated (0.0f, (float) headerH));
+    if (proc.oneKnob)
+    {
+        if (Rectangle<float> (36, 24, 230, 56).contains (p)) return "logo";
+        const int k = knobAt (p);
+        if (k >= 0) return k == 3 ? "amount" : k == 4 ? "mix" : "age";
+        for (int side = 0; side < 2; ++side)
+        {
+            const float mx = side == 0 ? oneMeterX : (float) oneW - oneMeterX;
+            if (std::abs (p.x - mx) < 26.0f && std::abs (p.y - oneKnobY) < 130.0f) return side == 0 ? "inMeter" : "outMeter";
+        }
+        return {};
+    }
     if (p.y >= H + splitOff())
     {
         p = lowerOf (p);
@@ -404,7 +431,6 @@ String BreatheEditor::hitKey (Point<float> p) const
         if (q.getDistanceFrom (smButton (b, true)) < 14.0f) return "mute";
         return "screen";
     }
-    if (p.getDistanceFrom (gearC) < 20.0f) return "gear";
     p.y -= tubeOff();      // tube block
     if (Rectangle<float> (ovsC.x - 34, ovsC.y - 12, 68, 24).contains (p)) return "ovs";
     if (Rectangle<float> (linC.x - 26, linC.y - 12, 52, 24).contains (p)) return "lin";
@@ -697,48 +723,6 @@ void BreatheEditor::buildPanel (float phys)
         g.drawRoundedRectangle (b.reduced (0.5f), 14, 1.0f);
     }
 
-    // gear: a small knurled metal button with an engraved gear
-    {
-        const float x = gearC.x, y = gearC.y, rr = 17.0f, dd = 5.0f;
-        DropShadow (Colours::black.withAlpha (0.65f), 6, { 1, 5 }).drawForPath (g, [&] { Path p; p.addEllipse (x - rr, y - rr, rr * 2, rr * 2); return p; }());
-        ColourGradient side (Colour (0xff0a0a0c), x - rr, 0, Colour (0xff060607), x + rr, 0, false);
-        side.addColour (0.25, Colour (0xff45454c));
-        side.addColour (0.5, Colour (0xff1e1e22));
-        g.setGradientFill (side);
-        g.fillRect (x - rr, y, rr * 2, dd);
-        g.fillEllipse (x - rr, y + dd - rr, rr * 2, rr * 2);
-        for (int i = 0; i < 28; ++i)
-        {
-            const float ph = (float) i * pi * 2.0f / 28.0f, sn = std::sin (ph);
-            if (sn <= 0.05f) continue;
-            const float px = x + std::cos (ph) * rr, sq = std::sqrt (jmax (0.0f, rr * rr - (px - x) * (px - x)));
-            g.setColour (Colours::white.withAlpha (0.04f + 0.3f * std::pow (jmax (0.0f, -std::cos (ph) * 0.8f + 0.35f) * sn, 2.0f)));
-            g.drawLine (px, y + sq, px, y + dd + sq - 1.0f, 1.1f * sn);
-        }
-        ColourGradient top (Colour (0xff6a6b73), x - rr * 0.5f, y - rr, Colour (0xff0d0d10), x + rr * 0.5f, y + rr, false);
-        top.addColour (0.5, Colour (0xff26262b));
-        g.setGradientFill (top);
-        g.fillEllipse (x - rr, y - rr, rr * 2, rr * 2);
-        g.setColour (Colours::white.withAlpha (0.35f));
-        g.drawEllipse (x - rr + 0.8f, y - rr + 0.8f, rr * 2 - 1.6f, rr * 2 - 1.6f, 0.8f);
-        Path gp;
-        for (int i = 0; i < 8; ++i)
-        {
-            const float a = (float) i * pi / 4.0f;
-            gp.addRectangle (-1.8f, -9.5f, 3.6f, 4.0f);
-            gp.applyTransform (AffineTransform::rotation (pi / 4.0f));
-            ignoreUnused (a);
-        }
-        gp.addEllipse (-6.5f, -6.5f, 13.0f, 13.0f);
-        Path hole;
-        hole.addEllipse (-2.6f, -2.6f, 5.2f, 5.2f);
-        gp.addPath (hole);
-        gp.setUsingNonZeroWinding (false);
-        g.setColour (Colours::white.withAlpha (0.22f));
-        g.fillPath (gp, AffineTransform::translation (x + 0.6f, y + 0.9f));
-        g.setColour (Colour (0xff09090b));
-        g.fillPath (gp, AffineTransform::translation (x, y));
-    }
     drawAdvStatic (g);
 }
 
@@ -1376,6 +1360,7 @@ void BreatheEditor::paint (Graphics& g)
 {
     const float phys = (float) g.getInternalContext().getPhysicalPixelScaleFactor();
     physScale = phys;
+    if (proc.oneKnob) { paintOne (g, phys); return; }
     if (! panel.isValid() || panelScale != phys || panelTheme != look.theme().name
         || panel.getWidth() != roundToInt ((float) getWidth() * phys) || panel.getHeight() != roundToInt ((float) getHeight() * phys))
         buildPanel (phys);
@@ -1620,6 +1605,7 @@ void BreatheEditor::tick (double dt)
     repaint (toPixelsLower (Rectangle<float> (0, stripY(), W, (float) stripH)));
     repaint (toPixels (Rectangle<float> (0, -(float) headerH, W, (float) headerH)));
 
+    if (proc.oneKnob) { repaint(); return; }
     // knobs only when something about them changed
     String sig;
     for (int k = 0; k < numKnobs; ++k) sig << String (value (k), 4) << ",";
@@ -1885,11 +1871,11 @@ void BreatheEditor::showGearMenu()
     m.addSubMenu ("Help", help);
     m.addSubMenu ("Help language", langs);
     m.addSeparator();
-    m.addItem ("Start tour", [this] { tour.start (lang); });
-    m.addItem ("Reset window size", [this] { prefW = baseW; fitWindow(); });
+    if (! proc.oneKnob) m.addItem ("Start tour", [this] { tour.start (lang); });
+    m.addItem ("Reset window size", [this] { prefW = (int) bw(); fitWindow(); });
     m.addSeparator();
     m.addItem ("About Breathe", [this] { showAbout(); });
-    const auto at = mouse.y < 0.0f ? Rectangle<float> (1137.0f, -(float) headerH, 30.0f, (float) headerH) : Rectangle<float> (gearC.x - 18, gearC.y - 18, 36, 36);
+    const auto at = Rectangle<float> (settingsX() - 15.0f, -(float) headerH, 30.0f, (float) headerH);
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (toPixels (at))));
 }
 
@@ -1913,8 +1899,9 @@ namespace
 void BreatheEditor::applySizeLimits()
 {
     const float hl = logicalH();
-    setResizeLimits (560, roundToInt (560.0f * hl / W), 2360, roundToInt (2360.0f * hl / W));
-    if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) W / (double) hl);
+    const float lw = bw(), minW = proc.oneKnob ? 400.0f : 560.0f, maxW = proc.oneKnob ? 1600.0f : 2360.0f;
+    setResizeLimits ((int) minW, roundToInt (minW * hl / lw), (int) maxW, roundToInt (maxW * hl / lw));
+    if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) lw / (double) hl);
 }
 
 void BreatheEditor::fitWindow()
@@ -1929,10 +1916,10 @@ void BreatheEditor::fitWindow()
     if (d != nullptr)
     {
         const int maxH = d->userArea.getHeight() - 90;           // room for the host's title bar
-        if ((float) w * hl / W > (float) maxH) w = jmax (560, (int) ((float) maxH * W / hl));
+        if ((float) w * hl / bw() > (float) maxH) w = jmax (400, (int) ((float) maxH * bw() / hl));
     }
     const ScopedValueSetter<bool> sv (autoSizing, true);
-    setSize (w, roundToInt ((float) w * hl / W));
+    setSize (w, roundToInt ((float) w * hl / bw()));
 }
 
 void BreatheEditor::setAdvancedOpen (bool open)
@@ -1982,6 +1969,7 @@ void BreatheEditor::remap()
     }
     const int es = editSide();
     for (int i = 0; i < 12; ++i) advParam[i] = es == 0 ? advA[i] : advB[i];
+    if (proc.oneKnob) knobParam[3] = amountParam;
     knobSignature = {};
     for (auto& c : knobCache) c = {};
     repaint();
@@ -2557,11 +2545,39 @@ void BreatheEditor::drawLiftScreen (Graphics& g, Rectangle<float> sR, int b)
 
 
 //==============================================================================
-// Design preview: the one-knob edition, drawn with the same parts as the main plug-in
-void BreatheEditor::paintOneKnobMock (Graphics& g)
+// One-knob edition (Breathe Analog Color): the same parts as the main plug-in on a square panel
+void BreatheEditor::paintOne (Graphics& g, float phys)
+{
+    if (! panel.isValid() || panelScale != phys || panelTheme != look.theme().name
+        || panel.getWidth() != roundToInt ((float) getWidth() * phys) || panel.getHeight() != roundToInt ((float) getHeight() * phys))
+    {
+        panel = Image (Image::RGB, jmax (1, roundToInt ((float) getWidth() * phys)), jmax (1, roundToInt ((float) getHeight() * phys)), true);
+        panelScale = phys;
+        panelTheme = look.theme().name;
+        Graphics pg (panel);
+        pg.fillAll (Colour (0xff0d0d0f));
+        pg.addTransform (toScreen().scaled (phys));
+        {
+            const Rectangle<float> hb (0.0f, -(float) headerH, (float) oneW, (float) headerH);
+            pg.setGradientFill (ColourGradient (Colour (0xff17171a), 0, hb.getY(), Colour (0xff09090b), 0, hb.getBottom(), false));
+            pg.fillRect (hb);
+            pg.setTiledImageFill (grainTile, 0, 0, 0.6f);
+            pg.fillRect (hb);
+            pg.setColour (Colours::white.withAlpha (0.06f)); pg.fillRect (0.0f, hb.getY(), (float) oneW, 1.0f);
+        }
+        drawOneStatic (pg);
+        pg.setColour (Colours::black); pg.fillRect (0.0f, -1.5f, (float) oneW, 1.5f);
+    }
+    g.drawImageTransformed (panel, AffineTransform::scale (1.0f / phys));
+    g.addTransform (toScreen());
+    drawHeader (g);
+    drawOneDynamic (g);
+}
+
+void BreatheEditor::drawOneStatic (Graphics& g)
 {
     const auto& t = look.theme();
-    const float S = 640.0f, mid = S * 0.5f;
+    const float S = (float) oneW, mid = S * 0.5f;
     const Colour pc = panelColour (t);
     Random r (4321);
     {
@@ -2578,6 +2594,12 @@ void BreatheEditor::paintOneKnobMock (Graphics& g)
         g.setColour ((r.nextFloat() < 0.55f ? Colours::white : Colours::black).withAlpha (t.lightBg ? 0.06f : 0.05f));
         g.drawLine (x0, y, jmin (S, x0 + len), y, 0.2f + r.nextFloat() * 0.8f);
     }
+    if (! t.lightBg)
+        for (int i = 0; i < 180; ++i)
+        {
+            g.setColour (Colours::white.withAlpha (r.nextFloat() * 0.1f));
+            g.fillRect (r.nextFloat() * S, r.nextFloat() * S, 1.0f, 1.0f);
+        }
     {
         ColourGradient hot (Colours::white.withAlpha (t.lightBg ? 0.10f : 0.13f), mid, -40.0f, Colours::white.withAlpha (0.0f), mid, 520.0f, true);
         g.setGradientFill (hot);
@@ -2593,50 +2615,38 @@ void BreatheEditor::paintOneKnobMock (Graphics& g)
 
     // logo and name
     {
-        const auto la = Rectangle<float> (40.0f, 30.0f, 46.0f, 48.0f);
+        const auto la = Rectangle<float> (40.0f, 28.0f, 48.0f, 50.0f);
         const auto tr = RectanglePlacement (RectanglePlacement::centred).getTransformToFit (Logo::viewBox, la);
         Path lp (Logo::path());
         lp.applyTransform (tr);
         g.setColour (Colours::black.withAlpha (0.6f));
         g.fillPath (lp, AffineTransform::translation (0.0f, 1.3f));
         DropShadow (t.logo.withAlpha (0.55f), 12, {}).drawForPath (g, lp);
-        g.setColour (t.logo);
+        if (t.gloss)
+        {
+            ColourGradient gold (Colour (0xfff6dc9a), la.getX(), la.getY(), Colour (0xffa47a2c), la.getX(), la.getBottom(), false);
+            gold.addColour (0.55, Colour (0xffe8c46a));
+            g.setGradientFill (gold);
+        }
+        else
+            g.setColour (t.logo);
         g.fillPath (lp);
     }
     const Colour nameCol = t.lightBg ? Colour (0xff1e1300) : Colours::white;
-    g.setFont (uiFont (28.0f, true, 0.04f));
+    g.setFont (uiFont (30.0f, true, 0.04f));
     g.setColour (Colours::black.withAlpha (0.6f));
-    g.drawText ("BREATHE", Rectangle<float> (96, 33, 300, 30), Justification::centredLeft);
+    g.drawText ("BREATHE", Rectangle<float> (98, 31, 300, 32), Justification::centredLeft);
     g.setColour (nameCol);
-    g.drawText ("BREATHE", Rectangle<float> (96, 30, 300, 30), Justification::centredLeft);
+    g.drawText ("BREATHE", Rectangle<float> (98, 28, 300, 32), Justification::centredLeft);
     const Font labelFont = uiFont (10.5f, true, 0.28f);
-    engrave (g, t, "PRIMAL RAGE LAB", 98, 70, labelFont, Justification::centredLeft, t.mute);
-    // gear (settings)
-    {
-        const float x = S - 58.0f, y = 50.0f, rr = 15.0f;
-        DropShadow (Colours::black.withAlpha (0.65f), 6, { 1, 4 }).drawForPath (g, [&] { Path p; p.addEllipse (x - rr, y - rr, rr * 2, rr * 2); return p; }());
-        g.setGradientFill (ColourGradient (Colour (0xff3a3a40), x, y - rr, Colour (0xff141416), x, y + rr, false));
-        g.fillEllipse (x - rr, y - rr, rr * 2, rr * 2);
-        g.setColour (Colours::white.withAlpha (0.12f)); g.drawEllipse (x - rr, y - rr, rr * 2, rr * 2, 1.0f);
-        Path gp;
-        for (int i = 0; i < 16; ++i)
-        {
-            const float a = (float) i / 16.0f * pi * 2.0f, a2 = a + pi / 8.0f, q = (i % 2 == 0) ? 8.0f : 5.8f;
-            const Point<float> p1 (x + q * std::cos (a), y + q * std::sin (a)), p2 (x + q * std::cos (a2), y + q * std::sin (a2));
-            if (i == 0) gp.startNewSubPath (p1); else gp.lineTo (p1);
-            gp.lineTo (p2);
-        }
-        gp.closeSubPath();
-        g.setColour (Colours::black.withAlpha (0.7f)); g.fillPath (gp);
-        g.setColour (Colour (0xff2a2a2e)); g.fillEllipse (x - 2.5f, y - 2.5f, 5, 5);
-    }
+    engrave (g, t, "PRIMAL RAGE LAB", 100, 70, labelFont, Justification::centredLeft, t.mute);
 
     // ANALOG COLOR / PROCESSOR, both lines the same width
     {
         GlyphArrangement a1;
         a1.addLineOfText (labelFont, "ANALOG COLOR", 0.0f, 0.0f);
         const float ink1 = a1.getGlyph (a1.getNumGlyphs() - 1).getRight() - a1.getGlyph (0).getLeft() - labelFont.getHeight() * 0.28f;
-        a1.moveRangeOfGlyphs (0, -1, mid - ink1 * 0.5f - a1.getGlyph (0).getLeft(), 118.0f);
+        a1.moveRangeOfGlyphs (0, -1, mid - ink1 * 0.5f - a1.getGlyph (0).getLeft(), 120.0f);
         const Font plain = uiFont (10.5f, true);
         const String l2 = "PROCESSOR";
         float widths[16] {}, sum = 0.0f;
@@ -2644,7 +2654,7 @@ void BreatheEditor::paintOneKnobMock (Graphics& g)
         const float gap = (ink1 - sum) / (float) (l2.length() - 1);
         GlyphArrangement a2;
         float xx = mid - ink1 * 0.5f;
-        for (int i = 0; i < l2.length(); ++i) { a2.addLineOfText (plain, l2.substring (i, i + 1), xx, 133.0f); xx += widths[i] + gap; }
+        for (int i = 0; i < l2.length(); ++i) { a2.addLineOfText (plain, l2.substring (i, i + 1), xx, 135.0f); xx += widths[i] + gap; }
         for (auto* a : { &a1, &a2 })
         {
             g.setColour (t.lightBg ? Colours::white.withAlpha (0.4f) : Colours::black.withAlpha (0.75f));
@@ -2654,10 +2664,13 @@ void BreatheEditor::paintOneKnobMock (Graphics& g)
         }
     }
 
-    // knob statics (scale dots, groove, names) for knob k drawn around its own centre
-    auto statics = [&] (int k, bool withName)
+    // knob scales, grooves, names
+    for (int k : { 3, 4, 5 })
     {
         const auto& d = knobDefs[k];
+        const auto o = oneKnob (k);
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::translation (-d.x, -d.y).scaled (o.s).translated (o.x, o.y));
         const int n = d.big ? 11 : 7;
         const float R = d.r + (d.big ? 27.0f : 15.0f);
         g.setColour (t.lightBg ? Colour ((uint8) 40, 20, 0, 0.6f) : Colours::white.withAlpha (0.45f));
@@ -2672,32 +2685,25 @@ void BreatheEditor::paintOneKnobMock (Graphics& g)
         groove.addCentredArc (d.x, d.y, RG, RG, 0.0f, -pi * 0.75f, pi * 0.75f, true);
         g.setColour (Colours::black.withAlpha (0.65f));
         g.strokePath (groove, PathStrokeType (d.big ? 9.0f : 5.0f));
+        Path lip;
+        lip.addCentredArc (d.x, d.y, RG + 5.0f, RG + 5.0f, 0.0f, -pi * 0.75f, pi * 0.75f, true);
+        g.setColour (t.lightBg ? Colours::white.withAlpha (0.35f) : Colours::white.withAlpha (0.07f));
+        g.strokePath (lip, PathStrokeType (1.0f));
         if (d.big)
         {
             engrave (g, t, "0", d.x - R * 0.8f, d.y + R * 0.86f, uiFont (10.0f), Justification::centred, t.mute, 40);
             engrave (g, t, "MAX", d.x + R * 0.8f, d.y + R * 0.86f, uiFont (10.0f), Justification::centred, t.mute, 40);
         }
-        else if (withName)
+        else
             engrave (g, t, d.name, d.x, d.y + 46, uiFont (10.0f, true, 0.05f), Justification::centred, t.ink, 100);
-    };
-    auto place = [&] (int k, float x, float y, float sc)
-    {
-        const auto& d = knobDefs[k];
-        Graphics::ScopedSaveState ss (g);
-        g.addTransform (AffineTransform::translation (-d.x, -d.y).scaled (sc).translated (x, y));
-        statics (k, true);
-        drawKnob (g, k, false);
-    };
-    const float ky = 318.0f;
-    place (3, mid, ky, 1.55f);
-    // IN / OUT meters either side
+    }
+    // meter scales
     for (int side = 0; side < 2; ++side)
     {
-        const float mx = side == 0 ? 92.0f : S - 92.0f;
+        const float mx = side == 0 ? oneMeterX : S - oneMeterX;
         Graphics::ScopedSaveState ss (g);
-        const float mc = (meterTop + meterBot) * 0.5f, sc = 1.3f;
-        g.addTransform (AffineTransform::translation (-mx, -mc).scaled (sc).translated (mx, ky));
-        drawMeter (g, mx, meterL[side], peakL[side]);
+        const float mc = (meterTop + meterBot) * 0.5f;
+        g.addTransform (AffineTransform::translation (-mx, -mc).scaled (oneMeterS).translated (mx, oneKnobY));
         const Font small = uiFont (9.0f), bold10 = uiFont (10.0f, true);
         engrave (g, t, side == 0 ? "IN" : "OUT", mx, meterTop - 14, bold10, Justification::centred, t.mute, 40);
         for (int db : { 6, 0, -6, -12, -24, -48 })
@@ -2706,15 +2712,36 @@ void BreatheEditor::paintOneKnobMock (Graphics& g)
             engrave (g, t, s2, side == 0 ? mx + 18 : mx - 18, meterY ((float) db), small, side == 0 ? Justification::centredLeft : Justification::centredRight, t.mute, 30);
         }
     }
-    // AGE and MIX
-    place (5, mid - 150.0f, 548.0f, 1.25f);
-    place (4, mid + 150.0f, 548.0f, 1.25f);
+}
+
+void BreatheEditor::drawOneDynamic (Graphics& g)
+{
+    const float base = physScale;
+    for (int k : { 3, 4, 5 })
+    {
+        const auto& d = knobDefs[k];
+        const auto o = oneKnob (k);
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::translation (-d.x, -d.y).scaled (o.s).translated (o.x, o.y));
+        physScale = base * o.s;          // the knob image is cached at the size it is shown
+        drawKnob (g, k, k == hoverKnob || k == dragKnob);
+    }
+    physScale = base;
+    for (int side = 0; side < 2; ++side)
+    {
+        const float mx = side == 0 ? oneMeterX : (float) oneW - oneMeterX;
+        Graphics::ScopedSaveState ss (g);
+        const float mc = (meterTop + meterBot) * 0.5f;
+        g.addTransform (AffineTransform::translation (-mx, -mc).scaled (oneMeterS).translated (mx, oneKnobY));
+        drawMeter (g, mx, meterL[side], peakL[side]);
+    }
 }
 
 //==============================================================================
 void BreatheEditor::showAbout()
 {
     about.accent = look.theme().accent;
+    about.oneKnob = proc.oneKnob;
     about.info = [this]
     {
         StringArray s;
@@ -2737,7 +2764,8 @@ void BreatheEditor::showAbout()
 
 void AboutOverlay::paint (Graphics& g)
 {
-    const float s = jmin ((float) getWidth() / (float) BreatheEditor::baseW, (float) getHeight() / 600.0f);
+    const float s = oneKnob ? jmin ((float) getWidth() / 700.0f, (float) getHeight() / 560.0f)
+                            : jmin ((float) getWidth() / (float) BreatheEditor::baseW, (float) getHeight() / 600.0f);
     g.fillAll (Colours::black.withAlpha (0.72f));
     const Rectangle<float> card ((float) getWidth() * 0.5f - 270.0f * s, (float) getHeight() * 0.5f - 210.0f * s, 540.0f * s, 420.0f * s);
     g.setColour (Colour (0xff17171a));
@@ -2756,7 +2784,7 @@ void AboutOverlay::paint (Graphics& g)
     g.drawText ("BREATHE", Rectangle<float> (card.getX(), card.getY() + 110.0f * s, card.getWidth(), 40.0f * s), Justification::centred);
     g.setFont (uiFont (11.0f * s, true, 0.3f));
     g.setColour (Colour (0xffcfcfd4));
-    g.drawText ("MASTERING ANALOG COLOR PROCESSOR", Rectangle<float> (card.getX(), card.getY() + 152.0f * s, card.getWidth(), 18.0f * s), Justification::centred);
+    g.drawText (oneKnob ? "ANALOG COLOR PROCESSOR" : "MASTERING ANALOG COLOR PROCESSOR", Rectangle<float> (card.getX(), card.getY() + 152.0f * s, card.getWidth(), 18.0f * s), Justification::centred);
 
     float yy = card.getY() + 190.0f * s;
     g.setFont (uiFont (12.5f * s));
@@ -2794,11 +2822,25 @@ namespace
         { "sideA", 1004, 26 }, { "link", 1036, 30 }, { "sideB", 1068, 26 },
         { "split", 1112, 34 }, { "settings", 1152, 30 },
     };
+    const HItem headerItemsOne[] = {
+        { "power", 30, 34 }, { "undo", 82, 30 }, { "redo", 114, 30 },
+        { "slotA", 162, 24 }, { "slotB", 188, 24 }, { "slotC", 214, 24 }, { "slotD", 240, 24 },
+        { "reset", 287, 54 },
+        { "autoOut", 350, 40 }, { "autoIn", 398, 40 },
+        { "monM", 450, 26 }, { "monS", 478, 26 }, { "monL", 506, 26 }, { "monR", 534, 26 }, { "monMono", 574, 46 },
+        { "settings", 616, 30 },
+    };
 }
 
 String BreatheEditor::headerKeyAt (Point<float> p) const
 {
     if (p.y < 0.0f || p.y > (float) headerH) return {};
+    if (proc.oneKnob)
+    {
+        for (const auto& it : headerItemsOne)
+            if (std::abs (p.x - it.x) <= it.w * 0.5f + 1.0f) return it.key;
+        return {};
+    }
     for (const auto& it : headerItems)
         if (std::abs (p.x - it.x) <= it.w * 0.5f + 1.0f) return it.key;
     return {};
@@ -2833,6 +2875,26 @@ void BreatheEditor::headerClick (const String& key)
         const int cur = (int) monitorParam->convertFrom0to1 (monitorParam->getValue());
         setChoice (monitorParam, cur == idx ? 0 : idx);
     }
+}
+
+void BreatheEditor::drawSettingsGear (Graphics& g, Colour c)
+{
+    // settings: theme, hints, hint language, tour, window size, about
+    const float gx = settingsX(), cy = (float) headerH * 0.5f, R = 8.5f, r0 = 6.2f;
+    Path p;
+    for (int i = 0; i < 16; ++i)
+    {
+        const float a = (float) i / 16.0f * pi * 2.0f - pi * 0.5f / 8.0f;
+        const float rr = (i % 2 == 0) ? R : r0;
+        const float a2 = a + pi * 2.0f / 16.0f;
+        const Point<float> p1 (gx + rr * std::cos (a), cy + rr * std::sin (a)), p2 (gx + rr * std::cos (a2), cy + rr * std::sin (a2));
+        if (i == 0) p.startNewSubPath (p1); else p.lineTo (p1);
+        p.lineTo (p2);
+    }
+    p.closeSubPath();
+    p.addEllipse (gx - 2.8f, cy - 2.8f, 5.6f, 5.6f);
+    g.setColour (c);
+    g.strokePath (p, PathStrokeType (1.6f, PathStrokeType::curved, PathStrokeType::rounded));
 }
 
 void BreatheEditor::drawHeader (Graphics& g)
@@ -2890,9 +2952,15 @@ void BreatheEditor::drawHeader (Graphics& g)
         glowText (String::charToString ((juce_wchar) ('A' + i)), Rectangle<float> (150.0f + 26.0f * (float) i, 0, 24, (float) headerH),
                   colFor (cur, true, keys[i]), cur, uiFont (16.0f, true));
     }
-    glowText ("Copy", Rectangle<float> (273, 0, 50, (float) headerH), colFor (false, true, "copy"), false, uiFont (15.0f, true));
-    glowText ("Paste", Rectangle<float> (331, 0, 54, (float) headerH), colFor (false, proc.clipboard.isValid(), "paste"), false, uiFont (15.0f, true));
-    glowText ("Reset", Rectangle<float> (397, 0, 54, (float) headerH), colFor (false, true, "reset"), false, uiFont (15.0f, true));
+    const bool one = proc.oneKnob;      // one-knob edition: a shorter bar (no copy / paste, no sides)
+    if (! one)
+    {
+        glowText ("Copy", Rectangle<float> (273, 0, 50, (float) headerH), colFor (false, true, "copy"), false, uiFont (15.0f, true));
+        glowText ("Paste", Rectangle<float> (331, 0, 54, (float) headerH), colFor (false, proc.clipboard.isValid(), "paste"), false, uiFont (15.0f, true));
+    }
+    glowText ("Reset", Rectangle<float> (one ? 260.0f : 397.0f, 0, 54, (float) headerH), colFor (false, true, "reset"), false, uiFont (15.0f, true));
+    Graphics::ScopedSaveState groupShift (g);
+    if (one) g.addTransform (AffineTransform::translation (-292.0f, 0.0f));
 
     // AUTO OUT (waves going out) / AUTO IN (waves coming in)
     for (int i = 0; i < 2; ++i)
@@ -2929,6 +2997,12 @@ void BreatheEditor::drawHeader (Graphics& g)
             g.drawRoundedRectangle (r, 11.0f, 1.6f);
             glowText (labels[i], r, on ? t.accentHi : colFor (false, true, keys[i]), on, uiFont (i == 4 ? 11.0f : 12.5f, true));
         }
+    }
+    if (one)
+    {
+        g.addTransform (AffineTransform::translation (292.0f, 0.0f));
+        drawSettingsGear (g, colFor (false, true, "settings"));
+        return;
     }
     // channel mode M/S | L/R
     {
@@ -2970,21 +3044,5 @@ void BreatheEditor::drawHeader (Graphics& g)
         p.addRoundedRectangle (1100.0f, cy + 1.5f, 24.0f, 7.5f, 2.5f);
         stroke (p, colFor (split, true, "split"), split, 1.7f);
     }
-    // settings: theme, hints, hint language, tour, window size, about
-    {
-        const float gx = 1152.0f, R = 8.5f, r0 = 6.2f;
-        Path p;
-        for (int i = 0; i < 16; ++i)
-        {
-            const float a = (float) i / 16.0f * pi * 2.0f - pi * 0.5f / 8.0f;
-            const float rr = (i % 2 == 0) ? R : r0;
-            const float a2 = a + pi * 2.0f / 16.0f;
-            const Point<float> p1 (gx + rr * std::cos (a), cy + rr * std::sin (a)), p2 (gx + rr * std::cos (a2), cy + rr * std::sin (a2));
-            if (i == 0) p.startNewSubPath (p1); else p.lineTo (p1);
-            p.lineTo (p2);
-        }
-        p.closeSubPath();
-        p.addEllipse (gx - 2.8f, cy - 2.8f, 5.6f, 5.6f);
-        stroke (p, colFor (false, true, "settings"), false, 1.6f);
-    }
+    drawSettingsGear (g, colFor (false, true, "settings"));
 }

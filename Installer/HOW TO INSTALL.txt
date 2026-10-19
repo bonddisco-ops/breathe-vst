@@ -41,7 +41,9 @@ MAC
    прослушивание M S L R mono, режим M/S или L/R, Link и Split.
  - Link выключен: две стороны (M/S или L/R) настраиваются отдельно. Split показывает
    обе стороны сразу - второй ряд ручек.
- - Клик по логотипу - информация о плагине. Шестерёнка - тема, подсказки, тур.
+ - Клик по логотипу - информация о плагине. Шестерёнка справа в верхней панели - темы, подсказки, тур.
+ - BREATHE ANALOG COLOR - отдельный плагин в том же архиве: одна ручка AMOUNT крутит все
+   четыре полосы разом (режим MIX), плюс MIX и AGE. Вход и выход выставляются автоматически.
  - Подробно - в PDF-руководстве.
 
 ---------------------------------------------------------------
@@ -74,4 +76,6 @@ USING IT
  - Top bar: Power, undo/redo, A-D slots, Copy/Paste, Reset, AUTO OUT (loudness match),
    AUTO IN (working level into the iron), listen M S L R mono, M/S or L/R, Link, Split.
  - Link off: the two sides (M/S or L/R) are set separately. Split shows both at once.
- - Click the logo for version info. The gear holds themes, hints and the tour.
+ - Click the logo for version info. The gear at the right end of the top bar holds themes, hints and the tour.
+ - BREATHE ANALOG COLOR is a separate plug-in in the same archive: one AMOUNT knob turns all
+   four bands at once (MIX intensity), plus MIX and AGE. Input and output levels are automatic.

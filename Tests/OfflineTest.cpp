@@ -186,20 +186,20 @@ int main (int argc, char** argv)
     }
     if (argc > 2 && String (argv[2]) == "oneknob")
     {
-        defaults (p, true, 1);
-        for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 0.62f);
-        setP (p, Params::mix, 0.8f); setP (p, Params::age, 0.25f);
-        prepare (p);
+        BreatheProcessor o (true);
+        o.setPlayConfigDetails (2, 2, SR, BS);
+        setP (o, Params::amount, 0.62f); setP (o, Params::mix, 0.85f); setP (o, Params::age, 0.25f);
+        o.prepareToPlay (SR, BS);
         auto in = noise (0.5f, 0.25f, 3);
         for (const auto& th : Theme::all())
         {
-            p.apvts.state.setProperty ("theme", th.name, nullptr);
-            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (p.createEditor()));
+            o.apvts.state.setProperty ("theme", th.name, nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (o.createEditor()));
             ed->applyTheme (th.name);
             ed->hideWelcomeForTest();
-            for (int i = 0; i < 4; ++i) { auto blk = run (p, in); ed->renderForTest (0.5); }
-            Image img (Image::RGB, 1280, 1280, true);
-            { Graphics g (img); g.addTransform (AffineTransform::scale (2.0f)); ed->paintOneKnobMock (g); }
+            ed->setSize (BreatheEditor::oneW, BreatheEditor::oneW + BreatheEditor::headerH);
+            for (int i = 0; i < 4; ++i) { auto blk = run (o, in); ed->renderForTest (0.5); }
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
             File f = outDir.getChildFile ("oneknob_" + th.name + ".png");
             f.deleteFile();
             if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
@@ -1000,6 +1000,42 @@ int main (int argc, char** argv)
         }
         setP (p, Params::monitor, 0);
         check (monOk, "listen M / S / L / R / mono: the chosen signal, in the centre");
+    }
+
+    // ---------------------------------------------------------------- one-knob edition
+    {
+        BreatheProcessor o (true);
+        o.setPlayConfigDetails (2, 2, SR, BS);
+        o.prepareToPlay (SR, BS);
+        auto in = noise (3.0f, 0.3f, 31);
+        // AMOUNT at zero: the signal passes bit-exact (AUTO IN / OUT on by default)
+        auto out0 = run (o, in);
+        double e0 = 0;
+        const int lat1 = o.getLatencySamples();
+        for (int ch = 0; ch < 2; ++ch) for (int i = 0; i + lat1 < in.getNumSamples(); ++i) e0 = jmax (e0, (double) std::abs (out0.getSample (ch, i + lat1) - in.getSample (ch, i)));
+        std::cout << "== one-knob, AMOUNT at zero: max error " << e0 << ", latency " << o.getLatencySamples() << "\n";
+        check (e0 == 0.0, "one-knob: AMOUNT at zero leaves the sound untouched");
+        // AMOUNT works like turning all four bands of the main plug-in together (MIX mode, analog phase, 2x)
+        setP (o, Params::amount, 0.7f);
+        o.prepareToPlay (SR, BS);
+        auto oneOut = run (o, sine (1000.0f, 2.0f, 0.25f));
+        defaults (p, false, 1);
+        for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 0.7f);
+        setP (p, Params::mode, 1); setP (p, Params::autoIn, 1); setP (p, Params::autoOut, 1);
+        prepare (p);
+        auto mainOut = run (p, sine (1000.0f, 2.0f, 0.25f));
+        const int st = (int) SR, len = (int) SR;
+        const float h1 = harmonic (oneOut, 0, st, len, 3000.0f), h2 = harmonic (mainOut, 0, st, len, 3000.0f);
+        const float r1 = rms (oneOut, 0, st, len), r2 = rms (mainOut, 0, st, len);
+        std::cout << "== one-knob vs main (all bands 70 %, MIX): level " << Decibels::gainToDecibels (r1) << " / " << Decibels::gainToDecibels (r2)
+                  << " dB, 3rd harmonic " << Decibels::gainToDecibels (h1) << " / " << Decibels::gainToDecibels (h2) << " dB\n";
+        check (std::abs (Decibels::gainToDecibels (r1 / r2)) < 0.3f && std::abs (Decibels::gainToDecibels (h1 / h2)) < 1.5f, "one-knob: AMOUNT = all four bands of the main plug-in together");
+        // the host sees only the controls of the one-knob edition
+        int automatable = 0;
+        StringArray names;
+        for (auto* prm : o.getParameters()) if (prm->isAutomatable()) { ++automatable; names.add (prm->getName (40)); }
+        std::cout << "== one-knob host parameters: " << names.joinIntoString (", ") << "\n";
+        check (names.contains ("Amount") && ! names.contains ("LOW") && ! names.contains ("Linear Phase"), "one-knob: only its own controls are automatable");
     }
 
     // ---------------------------------------------------------------- AUTO IN / AUTO OUT

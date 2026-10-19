@@ -77,6 +77,54 @@ target_link_libraries(Breathe
            juce::juce_recommended_lto_flags
            juce::juce_recommended_warning_flags)
 
+# One-knob edition: same engine and editor, one AMOUNT knob, MIX and AGE (BREATHE_ONE=1)
+juce_add_plugin(BreatheOne
+    COMPANY_NAME "Primal Rage Lab"
+    COMPANY_WEBSITE ""
+    BUNDLE_ID "com.primalragelab.breatheanalogcolor"
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    AU_MAIN_TYPE kAudioUnitType_Effect
+    VST3_CATEGORIES Fx Distortion
+    PLUGIN_MANUFACTURER_CODE Prlb
+    PLUGIN_CODE Brt1
+    PLUGIN_NAME "Breathe Analog Color"
+    FORMATS ${BRT_FORMATS}
+    COPY_PLUGIN_AFTER_BUILD FALSE
+    PRODUCT_NAME "Breathe Analog Color")
+
+target_sources(BreatheOne PRIVATE
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp
+    Source/Ui.cpp)
+
+if(MSVC)
+    target_compile_options(BreatheOne PRIVATE /utf-8)
+endif()
+
+target_compile_definitions(BreatheOne PUBLIC
+    BREATHE_ONE=1
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_REPORT_APP_USAGE=0)
+
+if(BRT_HEADLESS_TEST)
+    target_compile_definitions(BreatheOne PUBLIC
+        JUCE_USE_XRANDR=0 JUCE_USE_XINERAMA=0 JUCE_USE_XCURSOR=0
+        JUCE_USE_XRENDER=0 JUCE_USE_XSHM=0 JUCE_ALSA=0 JUCE_JACK=0)
+endif()
+
+target_link_libraries(BreatheOne
+    PRIVATE juce::juce_audio_utils juce::juce_dsp
+    PUBLIC juce::juce_recommended_config_flags
+           juce::juce_recommended_lto_flags
+           juce::juce_recommended_warning_flags)
+
 # Offline test tool: renders audio through the processor and a screenshot of the UI
 if(BRT_HEADLESS_TEST)
     juce_add_console_app(BRTTest PRODUCT_NAME "BRTTest")

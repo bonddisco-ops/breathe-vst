@@ -49,6 +49,8 @@ namespace Help
         { "bypass", "Bypass with latency preserved: switching is time-aligned and click-free.",
                     "Bypass с сохранением задержки: переключение выровнено по времени и происходит без щелчков." },
         { "gear", "Settings: theme, hints, hint language, tour, window size.", "Настройки: тема, подсказки, язык подсказок, обучающий тур, размер окна." },
+        { "amount", "Amount: every band of the processor at once - tube, tape and transformer saturation, optical compression, low-level lift and the Pultec-style curve, mix intensity. At zero the signal passes untouched. Shift for fine steps, double-click to reset.",
+                    "Amount: все полосы процессора разом — ламповое, ленточное и трансформаторное насыщение, оптическая компрессия, подъём тихих деталей и пультековская кривая, интенсивность MIX. На нуле сигнал проходит нетронутым. Shift — точная настройка, двойной клик — сброс." },
         { "settings", "Settings: theme, hints, hint language, tour, window size, about.", "Настройки: тема, подсказки, язык подсказок, обучающий тур, размер окна, о плагине." },
         { "power", "Power: processing on or off (latency preserved, so switching is time-aligned).", "Power: обработка включена или выключена (задержка сохраняется, переключение выровнено по времени)." },
         { "undo", "Undo the last change.", "Отменить последнее изменение." },

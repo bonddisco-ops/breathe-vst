@@ -10,6 +10,7 @@ public:
     void mouseDown (const juce::MouseEvent&) override { setVisible (false); }
     std::function<juce::StringArray()> info;
     juce::Colour accent { 0xffff73b2 };
+    bool oneKnob = false;
 };
 
 // The whole front panel is drawn by hand on a 1180 x 560 grid and scaled to the window.
@@ -37,9 +38,9 @@ public:
     void startTourForTest (int step) { welcome.setVisible (false); tour.start (lang); tour.showStep (step); }
     void hideWelcomeForTest() { welcome.setVisible (false); }
 
+    static constexpr int oneW = 640;          // one-knob edition: square body under the bar
     static constexpr int baseW = 1180, baseH = 560, stripH = 34, advH = 360, headerH = 40, splitH = 250;
     void setSplit (bool on);
-    void paintOneKnobMock (juce::Graphics&);          // design preview of the one-knob edition (square, 640 x 640)
     juce::String hitKeyForTest (juce::Point<float> p) const { return hitKey (p); }
     void setSideForTest (int s) { side = advSide = s; remap(); }
     void setAdvancedOpen (bool open);
@@ -103,7 +104,7 @@ private:
     float splitEase() const { const float a = juce::jlimit (0.0f, 1.0f, splitAnim); return a * a * (3.0f - 2.0f * a); }
     float splitOff() const { return (float) splitH * splitEase(); }     // the lower part of the main panel moves down this much
     float tubeOff() const { return splitOff() * 0.5f; }                   // the tube block sits centred between the two knob rows
-    float logicalH() const { return (float) (headerH + baseH + stripH + (advOpen ? advH : 0)) + ((split || splitAnim > 0.0f) ? (float) splitH : 0.0f); }
+    float logicalH() const { if (proc.oneKnob) return (float) (headerH + oneW); return (float) (headerH + baseH + stripH + (advOpen ? advH : 0)) + ((split || splitAnim > 0.0f) ? (float) splitH : 0.0f); }
     float stripY() const { return (float) baseH + (advOpen ? (float) advH : 0.0f); }      // lower space
     juce::Point<float> lowerOf (juce::Point<float> p) const { return p.translated (0.0f, -splitOff()); }
     bool linked() const { return flag (linkParam); }
@@ -118,6 +119,16 @@ private:
     int sideOf (juce::RangedAudioParameter*) const;
     juce::String headerKeyAt (juce::Point<float> headerSpace) const;
     void drawHeader (juce::Graphics&);
+    void drawSettingsGear (juce::Graphics&, juce::Colour);
+    // one-knob edition layout (body space, 640 x 640)
+    struct OnePos { float x, y, s; };
+    static constexpr float oneKnobY = 330.0f, oneMeterX = 92.0f, oneMeterS = 1.3f;
+    static OnePos oneKnob (int k) { return k == 3 ? OnePos { 320.0f, oneKnobY, 1.55f } : k == 5 ? OnePos { 170.0f, 556.0f, 1.25f } : OnePos { 470.0f, 556.0f, 1.25f }; }
+    juce::RangedAudioParameter* amountParam = nullptr;
+    void paintOne (juce::Graphics&, float phys);
+    void drawOneStatic (juce::Graphics&);
+    void drawOneDynamic (juce::Graphics&);
+    float settingsX() const { return proc.oneKnob ? 616.0f : 1152.0f; }
     void headerClick (const juce::String&);
     juce::Point<float> advKnobPos (int i) const;
     int advKnobAt (juce::Point<float>) const;
@@ -157,8 +168,9 @@ private:
 
     // The panel always fits the window the host actually gave us: uniform scale, centred.
     // (Some hosts refuse or delay a resize request, e.g. when the Advanced panel opens.)
-    float scale() const { return juce::jmax (0.05f, juce::jmin ((float) getWidth() / (float) baseW, (float) getHeight() / logicalH())); }
-    juce::Point<float> origin() const { const float s = scale(); return { ((float) getWidth() - (float) baseW * s) * 0.5f, ((float) getHeight() - logicalH() * s) * 0.5f + (float) headerH * s }; }
+    float bw() const { return proc.oneKnob ? (float) oneW : (float) baseW; }
+    float scale() const { return juce::jmax (0.05f, juce::jmin ((float) getWidth() / bw(), (float) getHeight() / logicalH())); }
+    juce::Point<float> origin() const { const float s = scale(); return { ((float) getWidth() - bw() * s) * 0.5f, ((float) getHeight() - logicalH() * s) * 0.5f + (float) headerH * s }; }
     // body space -> screen (the header sits at body y -40..0)
     juce::AffineTransform toScreen() const { const auto o = origin(); return juce::AffineTransform::scale (scale()).translated (o.x, o.y); }
     juce::Point<float> toLogical (juce::Point<float> p) const { return (p - origin()) / scale(); }

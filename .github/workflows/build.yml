@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cmake --build build --config Release --target Breathe_All --parallel 4 2>&1 | tee build.log
+          cmake --build build --config Release --target Breathe_All BreatheOne_All --parallel 4 2>&1 | tee build.log
 
       - name: Show compile errors
         if: failure()
@@ -50,15 +50,21 @@ jobs:
         run: |
           mkdir -p out
           ART=build/Breathe_artefacts/Release
+          ONE=build/BreatheOne_artefacts/Release
           cp -R "$ART/VST3/Breathe.vst3" out/
+          cp -R "$ONE/VST3/Breathe Analog Color.vst3" out/
           if [ "$RUNNER_OS" == "macOS" ]; then
             cp -R "$ART/AU/Breathe.component" out/
             cp -R "$ART/Standalone/Breathe.app" out/
+            cp -R "$ONE/AU/Breathe Analog Color.component" out/
+            cp -R "$ONE/Standalone/Breathe Analog Color.app" out/
             codesign --force --deep -s - "out/Breathe.vst3" "out/Breathe.component" "out/Breathe.app" || true
+            codesign --force --deep -s - "out/Breathe Analog Color.vst3" "out/Breathe Analog Color.component" "out/Breathe Analog Color.app" || true
             cp "Installer/Install Breathe.command" out/
             chmod +x "out/Install Breathe.command"
           else
             cp "$ART/Standalone/Breathe.exe" out/
+            cp "$ONE/Standalone/Breathe Analog Color.exe" out/
             cp "Installer/Install Breathe.bat" out/
           fi
           cp "Installer/HOW TO INSTALL.txt" out/
