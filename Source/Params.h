@@ -20,6 +20,16 @@ namespace Params
     inline const char* const bypass = "bypass";
     inline const char* const input = "input";
     inline const char* const mode = "mode";
+    inline const char* const autoIn = "autoIn";
+    // second side (Side or Right) and the channel tools in the header
+    inline const char* const band2[numBands] = { "low2", "lowMid2", "highMid2", "high2" };
+    inline const char* const advEq2[numBands] = { "advEq1b", "advEq2b", "advEq3b", "advEq4b" };
+    inline const char* const advDrive2[numBands] = { "advDrive1b", "advDrive2b", "advDrive3b", "advDrive4b" };
+    inline const char* const advDyn2[numBands] = { "advComp1b", "advComp2b", "advLift3b", "advLift4b" };
+    inline const char* const procMode = "procMode";    // 0 = M/S, 1 = L/R
+    inline const char* const link = "link";
+    inline const char* const monitor = "monitor";      // Off, M, S, L, R, Mono
+    inline const char* const autoOut = "autoOut";
 
     // Advanced trims, -100..+100 %, centre = the factory recipe
     inline const char* const advEq[numBands] = { "advEq1", "advEq2", "advEq3", "advEq4" };
@@ -70,6 +80,9 @@ namespace Params
         l.add (std::make_unique<AudioParameterFloat> (ParameterID { input, 1 }, "Input", NormalisableRange<float> (-30.0f, 30.0f), 0.0f,
                    AudioParameterFloatAttributes().withLabel ("dB")
                        .withStringFromValueFunction ([] (float v, int) { return (v > 0.05f ? "+" : "") + String (v, 1) + " dB"; })));
+        for (int b = 0; b < numBands; ++b)
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { band2[b], 1 }, String (bandName[b]) + " (Side/Right)",
+                       NormalisableRange<float> (0.0f, 1.0f), 0.0f, AudioParameterFloatAttributes().withStringFromValueFunction (pct)));
         auto trim = [] (float v, int) { return (v > 0.04f ? "+" : v < -0.04f ? "-" : "") + String (std::abs (v), 1) + " %"; };
         for (int b = 0; b < numBands; ++b)
         {
@@ -77,11 +90,19 @@ namespace Params
             l.add (std::make_unique<AudioParameterFloat> (ParameterID { advEq[b], 1 }, String (bandName[b]) + " EQ", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
             l.add (std::make_unique<AudioParameterFloat> (ParameterID { advDrive[b], 1 }, String (bandName[b]) + " Drive", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
             l.add (std::make_unique<AudioParameterFloat> (ParameterID { advDyn[b], 1 }, String (bandName[b]) + " " + (b < 2 ? "Comp" : "Lift"), NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { advEq2[b], 1 }, String (bandName[b]) + " EQ (Side/Right)", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { advDrive2[b], 1 }, String (bandName[b]) + " Drive (Side/Right)", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
+            l.add (std::make_unique<AudioParameterFloat> (ParameterID { advDyn2[b], 1 }, String (bandName[b]) + " " + (b < 2 ? "Comp" : "Lift") + " (Side/Right)", NormalisableRange<float> (-100.0f, 100.0f), 0.0f, attr));
         }
+        l.add (std::make_unique<AudioParameterChoice> (ParameterID { procMode, 1 }, "Channels", StringArray { "M/S", "L/R" }, 0));
+        l.add (std::make_unique<AudioParameterBool> (ParameterID { link, 1 }, "Link", true));
+        l.add (std::make_unique<AudioParameterChoice> (ParameterID { monitor, 1 }, "Listen", StringArray { "Off", "M", "S", "L", "R", "Mono" }, 0));
         l.add (std::make_unique<AudioParameterChoice> (ParameterID { mode, 1 }, "Mode", StringArray { "MASTER", "MIX" }, 0));
         l.add (std::make_unique<AudioParameterChoice> (ParameterID { ovs, 1 }, "Oversampling", ovsNames, 1));
         l.add (std::make_unique<AudioParameterBool> (ParameterID { lin, 1 }, "Linear Phase", true));
         l.add (std::make_unique<AudioParameterBool> (ParameterID { bypass, 1 }, "Bypass", false));
+        l.add (std::make_unique<AudioParameterBool> (ParameterID { autoIn, 1 }, "Auto In", true));
+        l.add (std::make_unique<AudioParameterBool> (ParameterID { autoOut, 1 }, "Auto Out", true));
         return l;
     }
 }

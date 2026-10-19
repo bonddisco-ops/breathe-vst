@@ -52,7 +52,7 @@ private:
 BreatheProcessor::BreatheProcessor()
     : AudioProcessor (BusesProperties().withInput ("Input", AudioChannelSet::stereo(), true)
                                        .withOutput ("Output", AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "BREATHE", Params::layout())
+      apvts (*this, &undoManager, "BREATHE", Params::layout())
 {
     for (int b = 0; b < 4; ++b)
     {
@@ -72,6 +72,9 @@ BreatheProcessor::BreatheProcessor()
     linP = apvts.getRawParameterValue (Params::lin);
     bypassP = apvts.getRawParameterValue (Params::bypass);
     modeP = apvts.getRawParameterValue (Params::mode);
+    autoInP = apvts.getRawParameterValue (Params::autoIn);
+    monitorP = apvts.getRawParameterValue (Params::monitor);
+    autoOutP = apvts.getRawParameterValue (Params::autoOut);
 
     // every unit is a little different: fixed part tolerances per channel (not on the low band: mono bass stays mono)
     Random r (Time::currentTimeMillis());
@@ -165,6 +168,14 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
     mixS.reset (sr, 0.03);    mixS.setCurrentAndTargetValue (mixP->load());
     outS.reset (sr, 0.03);    outS.setCurrentAndTargetValue (Decibels::decibelsToGain (outP->load()));
     inS.reset (sr, 0.03);     inS.setCurrentAndTargetValue (Decibels::decibelsToGain (inP->load()));
+    autoOutS.reset (sr, 0.05); autoOutS.setCurrentAndTargetValue (1.0f);
+    autoInPow = 0.0158; autoInPrimed = false; autoOutIn = autoOutOut = 1.0e-6;
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const auto lc = Dsp::BiquadCoefs::lowShelf (sr, 100.0, 0.7, -12.0), hc = Dsp::BiquadCoefs::highShelf (sr, 1500.0, 0.7, 4.0);
+        kwIn[0][ch].k = kwOut[0][ch].k = lc;  kwIn[1][ch].k = kwOut[1][ch].k = hc;
+        kwIn[0][ch].reset(); kwIn[1][ch].reset(); kwOut[0][ch].reset(); kwOut[1][ch].reset();
+    }
     modeS.reset (sr, 0.05);   modeS.setCurrentAndTargetValue (modeP->load());
     bypassS.reset (sr, 0.02); bypassS.setCurrentAndTargetValue (bypassP->load() > 0.5f ? 1.0f : 0.0f);
     wetActiveS.reset (sr, 0.02);
@@ -261,7 +272,25 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     wetActiveS.setTargetValue (anyOn ? 1.0f : 0.0f);
     mixS.setTargetValue (mixP->load());
     outS.setTargetValue (Decibels::decibelsToGain (outP->load()));
-    inS.setTargetValue (Decibels::decibelsToGain (inP->load()));
+    // AUTO IN: the iron sees about -18 dB RMS whatever the track level; IN becomes an offset from there
+    {
+        double pw = 0.0;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* d = io[jmin (ch, numCh - 1)];
+            for (int i = 0; i < n; ++i) pw += (double) d[i] * d[i];
+        }
+        pw /= (double) (2 * n);
+        if (pw > 1.0e-6)                                   // ignore silence and pauses (below -60 dBFS)
+        {
+            if (! autoInPrimed) { autoInPow = pw; autoInPrimed = true; }
+            const double c = 1.0 - std::exp (-(double) n / ((pw > autoInPow ? 1.5 : 4.0) * sampleRate));
+            autoInPow += c * (pw - autoInPow);
+        }
+        const float a = autoInP->load() > 0.5f ? jlimit (-24.0f, 24.0f, -18.0f - (float) (10.0 * std::log10 (autoInPow + 1.0e-12))) : 0.0f;
+        autoInDb = a;
+        inS.setTargetValue (Decibels::decibelsToGain (inP->load() + a));
+    }
     modeS.setTargetValue (modeP->load());
     bypassS.setTargetValue (byp ? 1.0f : 0.0f);
     const auto ms = Dsp::blend (modeS.skip (n));
@@ -408,11 +437,13 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     // ---- output: mix, idle path (true bypass when every knob is at zero), output gain, bypass
     const int lat = totalLatency();
     float env = envOut;
+    double pIn = 0.0, pOut = 0.0;
     const float envA = (float) std::exp (-1.0 / (0.15 * sampleRate));
 
     for (int i = 0; i < n; ++i)
     {
         const float m = mixS.getNextValue(), og = outS.getNextValue(), bp = bypassS.getNextValue(), wa = wetActiveS.getNextValue();
+        const float ao = autoOutS.getNextValue();
         float peak = 0.0f;
         for (int ch = 0; ch < 2; ++ch)
         {
@@ -426,15 +457,49 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
             }
             float y = dryMix + (wetBuf.getSample (ch, i) - dryMix) * m;
             y = raw + (y - raw) * wa;
-            y *= og;
+            {
+                const float ki = kwIn[1][ch].process (kwIn[0][ch].process (raw)), ko = kwOut[1][ch].process (kwOut[0][ch].process (y));
+                pIn += (double) ki * ki; pOut += (double) ko * ko;
+            }
+            y *= ao * og;
             y = y + (raw - y) * bp;
             if (ch < numCh) io[ch][i] = y;
             peak = jmax (peak, std::abs (y));
+        }
+        // listen: M, S, L or R alone, or the mono sum, always in the centre (monitoring only)
+        if (const int mon = (int) monitorP->load(); mon > 0 && numCh > 1)
+        {
+            const float l = io[0][i], r = io[1][i];
+            const float v = mon == 1 ? 0.5f * (l + r) : mon == 2 ? 0.5f * (l - r) : mon == 3 ? l : mon == 4 ? r : 0.5f * (l + r);
+            io[0][i] = io[1][i] = v;
         }
         env = peak > env ? peak : env * envA;
     }
     envOut = env;
     drive = jmin (1.0f, env);
+
+    // AUTO OUT: match the loudness of the processed signal to the input (rough K-weighting, slow)
+    {
+        pIn /= (double) (2 * n); pOut /= (double) (2 * n);
+        bool anyMute = false;
+        for (int b = 0; b < 4; ++b) anyMute |= muteP[b]->load() > 0.5f;
+        float target = 1.0f;
+        if (autoOutP->load() > 0.5f && anyOn)
+        {
+            // while a band is soloed or muted the match is held: a soloed band must not be pushed up to full-mix loudness
+            if (pIn > 1.0e-7 && ! anySolo && ! anyMute)
+            {
+                const double c = 1.0 - std::exp (-(double) n / (2.0 * sampleRate));
+                autoOutIn += c * (pIn - autoOutIn);
+                autoOutOut += c * (pOut - autoOutOut);
+            }
+            target = jlimit (0.25f, 4.0f, (float) std::sqrt (autoOutIn / jmax (1.0e-12, autoOutOut)));
+        }
+        else { autoOutIn = autoOutOut = 1.0e-6; }
+        autoOutS.setTargetValue (target);
+        if (target == 1.0f && std::abs (autoOutS.getCurrentValue() - 1.0f) < 1.0e-4f) autoOutS.setCurrentAndTargetValue (1.0f);
+        autoOutDb = Decibels::gainToDecibels (autoOutS.getTargetValue());
+    }
 }
 
 //==============================================================================
@@ -633,6 +698,36 @@ void BreatheProcessor::setStateInformation (const void* data, int size)
     if (auto xml = getXmlFromBinary (data, size))
         if (xml->hasTagName (apvts.state.getType()))
             apvts.replaceState (ValueTree::fromXml (*xml));
+}
+
+//==============================================================================
+void BreatheProcessor::selectSlot (int i)
+{
+    if (i == slot || i < 0 || i > 3) return;
+    slots[slot] = apvts.copyState();
+    slot = i;
+    if (slots[i].isValid()) apvts.replaceState (slots[i].createCopy());
+    else slots[i] = apvts.copyState();          // a fresh slot starts as a copy of the current settings
+}
+
+void BreatheProcessor::pasteSettings()
+{
+    if (! clipboard.isValid()) return;
+    undoManager.beginNewTransaction ("Paste");
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<RangedAudioParameter*> (p))
+        {
+            const auto child = clipboard.getChildWithProperty ("id", rp->getParameterID());
+            if (child.isValid()) rp->setValueNotifyingHost (rp->convertTo0to1 ((float) child.getProperty ("value")));
+        }
+}
+
+void BreatheProcessor::resetAll()
+{
+    undoManager.beginNewTransaction ("Reset");
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<RangedAudioParameter*> (p))
+            rp->setValueNotifyingHost (rp->getDefaultValue());
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new BreatheProcessor(); }

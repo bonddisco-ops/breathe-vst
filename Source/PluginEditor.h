@@ -37,7 +37,9 @@ public:
     void startTourForTest (int step) { welcome.setVisible (false); tour.start (lang); tour.showStep (step); }
     void hideWelcomeForTest() { welcome.setVisible (false); }
 
-    static constexpr int baseW = 1180, baseH = 560, stripH = 34, advH = 360;
+    static constexpr int baseW = 1180, baseH = 560, stripH = 34, advH = 360, headerH = 40, splitH = 250;
+    void setSplit (bool on);
+    void setSideForTest (int s) { side = advSide = s; remap(); }
     void setAdvancedOpen (bool open);
     void showAboutForTest() { showAbout(); }
     void showDynForTest (int band) { advView = 1; dynBand = band; dynSticky = true; }
@@ -53,7 +55,7 @@ private:
     bool helpOn = true, ready = false;
 
     struct KnobDef { const char* id; const char* name; float x, y, r; bool big; float def; };
-    static constexpr int numKnobs = 8;    // 4 bands, MIX, AGE, OUTPUT, IN
+    static constexpr int numKnobs = 12;   // 4 bands, MIX, AGE, OUTPUT, IN, then the 4 bands of the second side (split view)
     static const KnobDef knobDefs[numKnobs];
     juce::RangedAudioParameter* knobParam[numKnobs] {};
     juce::RangedAudioParameter* modeParam = nullptr;
@@ -77,14 +79,34 @@ private:
     int grPos = 0;
     std::array<float, 121> specPre {}, specPost {};
     float grShown = 0.0f, liftShown = 0.0f, waveScale = 0.01f;
+    float bandDynShown[4] {};                 // EQ screen: opto squeeze (LOW, LOW-MID, negative) / lift (HIGH-MID, HIGH, positive), dB
     std::vector<float> waveHi = std::vector<float> (361, 0.0f), waveLo = std::vector<float> (361, 0.0f);
     void readBandScope();
     void drawEqScreen (juce::Graphics&, juce::Rectangle<float>);
     void drawCompScreen (juce::Graphics&, juce::Rectangle<float>, int band);
     void drawLiftScreen (juce::Graphics&, juce::Rectangle<float>, int band);
     void touchAdv (int index);
-    float logicalH() const { return (float) (baseH + stripH + (advOpen ? advH : 0)); }
-    float stripY() const { return logicalH() - (float) stripH; }
+    // logical layout, top to bottom: header | main panel (body y 0..560) | split row | ADVANCED panel | strip.
+    // Body space starts under the header; "lower" space (ADVANCED, strip) is body space shifted up by the split row.
+    bool split = false;
+    int side = 0, advSide = 0;                 // 0 = Mid / Left, 1 = Side / Right
+    juce::RangedAudioParameter *band1Param[4] {}, *band2Param[4] {}, *advA[12] {}, *advB[12] {};
+    juce::RangedAudioParameter *procModeParam = nullptr, *linkParam = nullptr, *monitorParam = nullptr, *autoInParam = nullptr, *autoOutParam = nullptr;
+    float splitOff() const { return split ? (float) splitH : 0.0f; }     // the lower part of the main panel moves down this much
+    float tubeOff() const { return splitOff() * 0.5f; }                   // the tube block sits centred between the two knob rows
+    float logicalH() const { return (float) (headerH + baseH + stripH + (advOpen ? advH : 0)) + splitOff(); }
+    float stripY() const { return (float) baseH + (advOpen ? (float) advH : 0.0f); }      // lower space
+    juce::Point<float> lowerOf (juce::Point<float> p) const { return p.translated (0.0f, -splitOff()); }
+    bool linked() const { return flag (linkParam); }
+    int editSide() const { return linked() ? side : (split ? advSide : side); }
+    bool sideBandOn (int s, int b) const;
+    void remap();
+    void mirror (juce::RangedAudioParameter*);
+    void copySideFrom (int s);
+    int sideOf (juce::RangedAudioParameter*) const;
+    juce::String headerKeyAt (juce::Point<float> headerSpace) const;
+    void drawHeader (juce::Graphics&);
+    void headerClick (const juce::String&);
     juce::Point<float> advKnobPos (int i) const;
     int advKnobAt (juce::Point<float>) const;
     bool bandOn (int b) const;
@@ -121,9 +143,15 @@ private:
     juce::Random rnd;
     juce::String knobSignature;
 
-    float scale() const { return (float) getWidth() / (float) baseW; }
-    juce::Point<float> toLogical (juce::Point<float> p) const { return p / scale(); }
-    juce::Rectangle<int> toPixels (juce::Rectangle<float> r) const { return (r * scale()).getSmallestIntegerContainer().expanded (2); }
+    // The panel always fits the window the host actually gave us: uniform scale, centred.
+    // (Some hosts refuse or delay a resize request, e.g. when the Advanced panel opens.)
+    float scale() const { return juce::jmax (0.05f, juce::jmin ((float) getWidth() / (float) baseW, (float) getHeight() / logicalH())); }
+    juce::Point<float> origin() const { const float s = scale(); return { ((float) getWidth() - (float) baseW * s) * 0.5f, ((float) getHeight() - logicalH() * s) * 0.5f + (float) headerH * s }; }
+    // body space -> screen (the header sits at body y -40..0)
+    juce::AffineTransform toScreen() const { const auto o = origin(); return juce::AffineTransform::scale (scale()).translated (o.x, o.y); }
+    juce::Point<float> toLogical (juce::Point<float> p) const { return (p - origin()) / scale(); }
+    juce::Rectangle<int> toPixels (juce::Rectangle<float> r) const { return (r * scale() + origin()).getSmallestIntegerContainer().expanded (2); }
+    juce::Rectangle<int> toPixelsLower (juce::Rectangle<float> r) const { return toPixels (r.translated (0.0f, splitOff())); }
 
     float value (int knobIndex) const;
     float xoFreq (int i) const;

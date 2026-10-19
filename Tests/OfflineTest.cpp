@@ -26,6 +26,7 @@ void defaults (BreatheProcessor& p, bool lin, int ovs)
     setP (p, Params::lin, lin ? 1.0f : 0.0f); setP (p, Params::ovs, (float) ovs); setP (p, Params::bypass, 0);
     setP (p, Params::input, 0); setP (p, Params::mode, 0);
     for (int b = 0; b < 4; ++b) { setP (p, Params::advEq[b], 0); setP (p, Params::advDrive[b], 0); setP (p, Params::advDyn[b], 0); }
+    setP (p, Params::autoIn, 0); setP (p, Params::autoOut, 0);
 }
 
 AudioBuffer<float> run (BreatheProcessor& p, const AudioBuffer<float>& in, int bs = BS)
@@ -161,13 +162,101 @@ int main (int argc, char** argv)
         return 0;
     }
 
+    if (argc > 2 && String (argv[2]) == "mock")
+    {
+        // every state the header / split mockup can show, rendered by the real editor
+        BreatheProcessor q;
+        q.setPlayConfigDetails (2, 2, SR, BS);
+        auto in = noise (0.5f, 0.3f, 11);
+        const float A[4] { 0.35f, 0.5f, 0.45f, 0.8f }, B[4] { 0.2f, 0.72f, 0.3f, 0.55f };
+        const float advA[12] { 40.5f, 62.0f, 18.5f, 0, -30.0f, 0, 25.5f, 0, 47.5f, 60.0f, 9.5f, 35.0f };
+        const float advB[12] { -20.0f, 15.0f, 0, 10.0f, 30.0f, -12.5f, 0, -25.0f, 20.0f, 35.0f, 0, -10.0f };
+        auto setup = [&] (bool lk, int mode)
+        {
+            defaults (q, true, 1);
+            setP (q, Params::link, lk ? 1.0f : 0.0f); setP (q, Params::procMode, (float) mode);
+            setP (q, Params::autoIn, 1); setP (q, Params::autoOut, 1);
+            for (int b = 0; b < 4; ++b)
+            {
+                setP (q, Params::band[b], A[b]); setP (q, Params::band2[b], lk ? A[b] : B[b]);
+                setP (q, Params::advEq[b], advA[b * 3]); setP (q, Params::advDrive[b], advA[b * 3 + 1]); setP (q, Params::advDyn[b], advA[b * 3 + 2]);
+                setP (q, Params::advEq2[b], lk ? advA[b * 3] : advB[b * 3]); setP (q, Params::advDrive2[b], lk ? advA[b * 3 + 1] : advB[b * 3 + 1]);
+                setP (q, Params::advDyn2[b], lk ? advA[b * 3 + 2] : advB[b * 3 + 2]);
+            }
+        };
+        auto shoot = [&] (const String& name, std::function<void (BreatheEditor&)> prep, bool spin)
+        {
+            q.apvts.state.setProperty ("theme", "Asphalt", nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->applyTheme ("Asphalt");
+            ed->hideWelcomeForTest();
+            prep (*ed);
+            if (spin) for (int i = 0; i < 6; ++i) { auto blk = run (q, in); ed->renderForTest (0.5); }
+            else ed->renderForTest (0.1);
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            File f = outDir.getChildFile (name + ".png");
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        };
+        q.prepareToPlay (SR, BS);
+        // bodies
+        for (int lk = 0; lk < 2; ++lk)
+            for (int mode = 0; mode < 2; ++mode)
+                for (int sp = 0; sp < 2; ++sp)
+                    for (int adv = 0; adv < 2; ++adv)
+                        for (int sd = 0; sd < ((lk || sp) ? 1 : 2); ++sd)
+                        {
+                            setup (lk == 1, mode);
+                            const String name = String ("body_l") + String (lk) + "_m" + String (mode) + "_s" + String (sp) + "_a" + String (adv) + "_d" + String (sd);
+                            shoot (name, [&] (BreatheEditor& e)
+                            {
+                                e.setAdvancedOpen (adv == 1);
+                                e.setSplit (sp == 1);
+                                e.setSideForTest (sd);
+                                const float hl = (float) (BreatheEditor::headerH + BreatheEditor::baseH + BreatheEditor::stripH + (adv ? BreatheEditor::advH : 0) + (sp ? BreatheEditor::splitH : 0));
+                                e.setSize (BreatheEditor::baseW, (int) hl);
+                            }, true);
+                        }
+        // header variants: one render per item state
+        struct HV { const char* name; std::function<void()> set; std::function<void (BreatheEditor&)> ed; };
+        auto none = [] (BreatheEditor&) {};
+        std::vector<HV> hv {
+            { "h_base", [&] { setup (true, 0); }, none },
+            { "h_power0", [&] { setup (true, 0); setP (q, Params::bypass, 1); }, none },
+            { "h_autoOut0", [&] { setup (true, 0); setP (q, Params::autoOut, 0); }, none },
+            { "h_autoIn0", [&] { setup (true, 0); setP (q, Params::autoIn, 0); }, none },
+            { "h_mon1", [&] { setup (true, 0); setP (q, Params::monitor, 1); }, none },
+            { "h_mon2", [&] { setup (true, 0); setP (q, Params::monitor, 2); }, none },
+            { "h_mon3", [&] { setup (true, 0); setP (q, Params::monitor, 3); }, none },
+            { "h_mon4", [&] { setup (true, 0); setP (q, Params::monitor, 4); }, none },
+            { "h_mon5", [&] { setup (true, 0); setP (q, Params::monitor, 5); }, none },
+            { "h_mode1", [&] { setup (true, 1); }, none },
+            { "h_unlinkA", [&] { setup (false, 0); }, [] (BreatheEditor& e) { e.setSideForTest (0); } },
+            { "h_unlinkB", [&] { setup (false, 0); }, [] (BreatheEditor& e) { e.setSideForTest (1); } },
+            { "h_unlinkA_lr", [&] { setup (false, 1); }, [] (BreatheEditor& e) { e.setSideForTest (0); } },
+            { "h_unlinkB_lr", [&] { setup (false, 1); }, [] (BreatheEditor& e) { e.setSideForTest (1); } },
+            { "h_link_lr", [&] { setup (true, 1); }, none },
+            { "h_splitU", [&] { setup (false, 0); }, [] (BreatheEditor& e) { e.setSplit (true); } },
+            { "h_splitU_lr", [&] { setup (false, 1); }, [] (BreatheEditor& e) { e.setSplit (true); } },
+        };
+        for (int sl = 1; sl < 4; ++sl)
+            hv.push_back ({ sl == 1 ? "h_slot1" : sl == 2 ? "h_slot2" : "h_slot3", [&, sl] { setup (true, 0); q.slot = sl; }, none });
+        for (auto& v : hv)
+        {
+            v.set();
+            shoot (v.name, [&] (BreatheEditor& e) { v.ed (e); e.setAdvancedOpen (false); }, false);
+            q.slot = 0;
+        }
+        return 0;
+    }
+
     if (argc > 2 && String (argv[2]) == "shots")
     {
         BreatheProcessor q;
         q.setPlayConfigDetails (2, 2, SR, BS);
         defaults (q, true, 1);
         setP (q, Params::band[0], 0.6f); setP (q, Params::band[1], 0.5f); setP (q, Params::band[2], 0.55f); setP (q, Params::band[3], 0.85f);
-        setP (q, Params::advEq[0], 40.5f); setP (q, Params::advDrive[0], 62.0f); setP (q, Params::advDyn[0], 18.5f);
+        setP (q, Params::advEq[0], 40.5f); setP (q, Params::advDrive[0], 62.0f); setP (q, Params::advDyn[0], 70.0f); setP (q, Params::advDyn[1], 50.0f);
         setP (q, Params::advDrive[1], -30.0f); setP (q, Params::advEq[2], 25.5f); setP (q, Params::advDyn[2], 47.5f);
         setP (q, Params::advEq[3], 60.0f); setP (q, Params::advDrive[3], 9.5f); setP (q, Params::advDyn[3], 35.0f);
         q.prepareToPlay (SR, BS);
@@ -203,6 +292,18 @@ int main (int argc, char** argv)
             if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
         }
         {
+            // a host that refuses to grow the window: the panel must shrink to fit, nothing cut off
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->setAdvancedOpen (true);
+            ed->setSize (BreatheEditor::baseW, BreatheEditor::baseH + BreatheEditor::stripH);
+            ed->hideWelcomeForTest();
+            for (int i = 0; i < 4; ++i) { auto blk = run (q, in); ed->renderForTest (0.5); }
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            File f = outDir.getChildFile ("squeezed.png");
+            f.deleteFile();
+            if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+        }
+        {
             std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
             ed->setAdvancedOpen (false);
             ed->setSize (BreatheEditor::baseW, BreatheEditor::baseH + BreatheEditor::stripH);
@@ -213,6 +314,52 @@ int main (int argc, char** argv)
             f.deleteFile();
             if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
         }
+        return 0;
+    }
+
+    if (argc > 2 && String (argv[2]) == "inlevel")
+    {
+        // pink-ish noise at about -18 dBFS RMS, all knobs high; response at a few frequencies vs IN
+        auto in = noise (6.0f, 0.12f, 77);
+        if (argc > 3)   // dynamic material: loud and quiet passages
+            for (int i = 0; i < in.getNumSamples(); ++i)
+            {
+                const double t = i / SR, ph = std::fmod (t, 1.0);
+                const float env = ph < 0.4 ? 1.0f : ph < 0.5 ? (float) std::exp (-(ph - 0.4) * 40.0) : 0.03f;
+                for (int ch = 0; ch < 2; ++ch) in.setSample (ch, i, in.getSample (ch, i) * env * 2.0f);
+            }
+        for (int mode = 0; mode < 2; ++mode)
+            for (float inDb : { 0.0f, -15.0f, -30.0f, 12.0f })
+            {
+                defaults (p, false, 1);
+                for (int b = 0; b < 4; ++b) setP (p, Params::band[b], 1.0f);
+                setP (p, Params::mode, (float) mode); setP (p, Params::input, inDb);
+                prepare (p);
+                auto o = run (p, in);
+                const int lat = p.getLatencySamples();
+                String line = String (mode ? "MIX    " : "MASTER ") + "IN " + String (inDb, 0) + ": ";
+                for (float f : { 40.0f, 200.0f, 1000.0f, 4400.0f, 11000.0f })
+                {
+                    // band-limited energy ratio around f (third octave) out / in
+                    auto bandE = [&] (const AudioBuffer<float>& b, int off)
+                    {
+                        dsp::IIR::Filter<float> hp, lp;
+                        hp.coefficients = dsp::IIR::Coefficients<float>::makeHighPass (SR, f / 1.12f, 2.0);
+                        lp.coefficients = dsp::IIR::Coefficients<float>::makeLowPass (SR, f * 1.12f, 2.0);
+                        double e = 0;
+                        for (int i = 0; i < b.getNumSamples() - off; ++i)
+                        {
+                            const float v = lp.processSample (hp.processSample (b.getSample (0, i + off)));
+                            if (i > (int) SR * 2) e += (double) v * v;
+                        }
+                        return e;
+                    };
+                    const double eo = bandE (o, lat), ei = bandE (in, 0);
+                    line << String (f, 0) << " Hz " << String (10.0 * std::log10 (eo / ei), 2) << "  ";
+                }
+                line << "| GR " << String (p.optoGr[0].load(), 2) << "/" << String (p.optoGr[1].load(), 2) << "  lift " << String (p.liftDb[2].load(), 2) << "/" << String (p.liftDb[3].load(), 2);
+                std::cout << line << "\n";
+            }
         return 0;
     }
 
@@ -636,6 +783,65 @@ int main (int argc, char** argv)
         for (int i = 0; i < o.getNumSamples(); ++i) { d = jmax (d, (double) std::abs (o.getSample (0, i) - o.getSample (1, i))); finite &= std::isfinite (o.getSample (0, i)); }
         std::cout << "== everything at +100 %, mono in: L-R difference " << d << "\n";
         check (finite && d < 1.0e-6, "mono stays mono with Advanced slammed");
+    }
+
+    // ---------------------------------------------------------------- AUTO IN / AUTO OUT
+    {
+        // bit-exact with both on and every knob at zero
+        defaults (p, true, 2);
+        setP (p, Params::autoIn, 1); setP (p, Params::autoOut, 1);
+        prepare (p);
+        const int lat = p.getLatencySamples();
+        auto in = noise (2.0f, 0.3f, 8);
+        auto out = run (p, in);
+        double err = 0;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = lat; i < in.getNumSamples(); ++i)
+                err = jmax (err, (double) std::abs (out.getSample (ch, i) - in.getSample (ch, i - lat)));
+        std::cout << "== AUTO IN + AUTO OUT on, knobs at zero: max error " << err << "\n";
+        check (err == 0.0, "AUTO modes leave the sound untouched while every knob is at zero");
+
+        // AUTO IN: a quiet and a loud track get the same colour
+        auto thd = [&] (float amp, bool autoIn)
+        {
+            defaults (p, true, 2);
+            setP (p, Params::band[1], 1.0f); setP (p, Params::autoIn, autoIn ? 1.0f : 0.0f);
+            prepare (p);
+            auto o = run (p, sine (350.0f, 6.0f, amp));
+            const int st = (int) (SR * 5), len = 19200;
+            const float h1 = harmonic (o, 0, st, len, 350), h2 = harmonic (o, 0, st, len, 700), h3 = harmonic (o, 0, st, len, 1050);
+            return std::sqrt (h2 * h2 + h3 * h3) / h1 * 100.0f;
+        };
+        const float qOff = thd (0.01f, false), lOff = thd (0.5f, false), qOn = thd (0.01f, true), lOn = thd (0.5f, true);
+        std::cout << "== AUTO IN: THD quiet / loud track  off " << String (qOff, 2) << " / " << String (lOff, 2) << " %,  on " << String (qOn, 2) << " / " << String (lOn, 2) << " %\n";
+        check (std::abs (qOn - lOn) < 0.35f * jmax (qOn, lOn) && qOn > qOff * 3.0f, "AUTO IN gives quiet and loud tracks the same colour");
+
+        // AUTO OUT: a big Pultec boost in MIX comes back to the input loudness
+        auto loud = [&] (bool autoOut)
+        {
+            defaults (p, false, 1);
+            setP (p, Params::mode, 1);
+            for (int b = 0; b < 4; ++b) { setP (p, Params::band[b], 1.0f); setP (p, Params::advEq[b], 100.0f); }
+            setP (p, Params::autoOut, autoOut ? 1.0f : 0.0f);
+            prepare (p);
+            auto src = noise (8.0f, 0.2f, 12);
+            auto o = run (p, src);
+            const int lat = p.getLatencySamples();
+            // K-weighted-ish level difference over the last 3 s
+            Dsp::Biquad a[2], c[2];
+            a[0].k = c[0].k = Dsp::BiquadCoefs::lowShelf (SR, 100.0, 0.7, -12.0);
+            a[1].k = c[1].k = Dsp::BiquadCoefs::highShelf (SR, 1500.0, 0.7, 4.0);
+            double ei = 0, eo = 0;
+            for (int i = 0; i + lat < src.getNumSamples(); ++i)
+            {
+                const float x = a[1].process (a[0].process (src.getSample (0, i))), y = c[1].process (c[0].process (o.getSample (0, i + lat)));
+                if (i > (int) SR * 5) { ei += (double) x * x; eo += (double) y * y; }
+            }
+            return (float) (10.0 * std::log10 (eo / ei));
+        };
+        const float off = loud (false), on = loud (true);
+        std::cout << "== AUTO OUT: loudness change with a full Pultec boost  off " << String (off, 2) << " dB,  on " << String (on, 2) << " dB\n";
+        check (std::abs (on) < 1.0f && std::abs (off) > 3.0f, "AUTO OUT brings the processed loudness back to the input");
     }
 
     // ---------------------------------------------------------------- bypass keeps latency

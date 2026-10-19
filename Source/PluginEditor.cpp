@@ -90,6 +90,10 @@ const BreatheEditor::KnobDef BreatheEditor::knobDefs[BreatheEditor::numKnobs] = 
     { Params::age, "AGE", 208, 452, 24, false, 0.0f },
     { Params::output, "OUTPUT", 1066, 452, 24, false, 0.0f },
     { Params::input, "IN", 112, 452, 24, false, 0.0f },
+    { Params::band2[0], "LOW", 172, 455, 58, true, 0.0f },
+    { Params::band2[1], "LOW-MID", 356, 455, 58, true, 0.0f },
+    { Params::band2[2], "HIGH-MID", 824, 455, 58, true, 0.0f },
+    { Params::band2[3], "HIGH", 1008, 455, 58, true, 0.0f },
 };
 
 //==============================================================================
@@ -137,6 +141,24 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
         advParam[b * 3 + 2] = proc.apvts.getParameter (Params::advDyn[b]);
     }
     advOpen = (bool) proc.apvts.state.getProperty ("advOpen", false);
+    split = (bool) proc.apvts.state.getProperty ("split", false);
+    for (int b = 0; b < 4; ++b)
+    {
+        band1Param[b] = proc.apvts.getParameter (Params::band[b]);
+        band2Param[b] = proc.apvts.getParameter (Params::band2[b]);
+        advA[b * 3 + 0] = proc.apvts.getParameter (Params::advEq[b]);
+        advA[b * 3 + 1] = proc.apvts.getParameter (Params::advDrive[b]);
+        advA[b * 3 + 2] = proc.apvts.getParameter (Params::advDyn[b]);
+        advB[b * 3 + 0] = proc.apvts.getParameter (Params::advEq2[b]);
+        advB[b * 3 + 1] = proc.apvts.getParameter (Params::advDrive2[b]);
+        advB[b * 3 + 2] = proc.apvts.getParameter (Params::advDyn2[b]);
+    }
+    procModeParam = proc.apvts.getParameter (Params::procMode);
+    linkParam = proc.apvts.getParameter (Params::link);
+    monitorParam = proc.apvts.getParameter (Params::monitor);
+    autoInParam = proc.apvts.getParameter (Params::autoIn);
+    autoOutParam = proc.apvts.getParameter (Params::autoOut);
+    remap();
 
     const auto themeName = proc.apvts.state.getProperty ("theme", loadSetting ("theme", "Asphalt")).toString();
     look.setTheme (Theme::byName (themeName));
@@ -264,6 +286,7 @@ float BreatheEditor::xf (float x) const { return 20.0f * std::pow (1000.0f, (x -
 
 int BreatheEditor::bandAt (Point<float> p) const
 {
+    p.y -= splitOff();
     if (! scr.contains (p)) return -1;
     const float f = xf (p.x);
     for (int i = 0; i < 3; ++i)
@@ -282,12 +305,17 @@ Point<float> BreatheEditor::smButton (int b, bool isMute) const
 int BreatheEditor::knobAt (Point<float> p) const
 {
     for (int k = 0; k < numKnobs; ++k)
-        if (p.getDistanceFrom ({ knobDefs[k].x, knobDefs[k].y }) < knobDefs[k].r + 8.0f) return k;
+    {
+        if (k >= 8 && ! split) break;
+        const float ky = knobDefs[k].y + (k >= 4 && k < 8 ? splitOff() : 0.0f);
+        if (p.getDistanceFrom ({ knobDefs[k].x, ky }) < knobDefs[k].r + 8.0f) return k;
+    }
     return -1;
 }
 
 int BreatheEditor::xoAt (Point<float> p) const
 {
+    p.y -= splitOff();
     if (! scr.contains (p)) return -1;
     for (int i = 0; i < 3; ++i)
         if (std::abs (fx (xoFreq (i)) - p.x) < 8.0f) return i;
@@ -298,17 +326,21 @@ Rectangle<float> BreatheEditor::knobArea (int k) const
 {
     const auto& d = knobDefs[k];
     const float R = d.r + (d.big ? 32.0f : 18.0f);
-    return Rectangle<float> (d.x - R - 12.0f, d.y - R - (d.big ? 26.0f : 36.0f), (R + 12.0f) * 2.0f, R * 2.0f + (d.big ? 160.0f : 70.0f));
+    return Rectangle<float> (d.x - R - 12.0f, d.y - R - (d.big ? 26.0f : 36.0f), (R + 12.0f) * 2.0f, R * 2.0f + (d.big ? 160.0f : 70.0f)).translated (0.0f, k >= 4 && k < 8 ? splitOff() : 0.0f);
 }
 
 String BreatheEditor::hitKey (Point<float> p) const
 {
-    if (p.y >= H)
+    if (p.y < 0.0f) return headerKeyAt (p.translated (0.0f, (float) headerH));
+    if (p.y >= H + splitOff())
     {
+        p = lowerOf (p);
         if (p.y >= stripY()) return Rectangle<float> (500, stripY() + 5, 180, 24).contains (p) ? "adv" : String();
         const int a = advKnobAt (p);
         if (a >= 0) return a % 3 == 0 ? "advEq" : a % 3 == 1 ? "advDrive" : a / 3 < 2 ? "advComp" : "advLift";
         if (Rectangle<float> (530, H + 268, 120, 30).contains (p)) return "advReset";
+        if (! linked() && Rectangle<float> (78, H + 22, 30, 18).contains (p)) return "advSideA";
+        if (! linked() && Rectangle<float> (112, H + 22, 30, 18).contains (p)) return "advSideB";
         if (Rectangle<float> (968, H + 22, 34, 18).contains (p)) return "tabEq";
         if (Rectangle<float> (1006, H + 22, 34, 18).contains (p)) return "tabDyn";
         if (advView == 1 && dynBand < 2 && Rectangle<float> (318, H + 46, 722, 168).contains (p))
@@ -322,16 +354,17 @@ String BreatheEditor::hitKey (Point<float> p) const
     }
     if (Rectangle<float> (60, 14, 250, 70).contains (p)) return "logo";
     const int k = knobAt (p);
-    if (k >= 0) return k < 4 ? Params::band[k] : k == 4 ? "mix" : k == 5 ? "age" : k == 6 ? "output" : "in";
+    if (k >= 0) return k >= 8 ? Params::band[k - 8] : k < 4 ? Params::band[k] : k == 4 ? "mix" : k == 5 ? "age" : k == 6 ? "output" : "in";
     const int b = bandAt (p);
     if (b >= 0)
     {
-        if (p.getDistanceFrom (smButton (b, false)) < 14.0f) return "solo";
-        if (p.getDistanceFrom (smButton (b, true)) < 14.0f) return "mute";
+        const auto q = p.translated (0.0f, -splitOff());
+        if (q.getDistanceFrom (smButton (b, false)) < 14.0f) return "solo";
+        if (q.getDistanceFrom (smButton (b, true)) < 14.0f) return "mute";
         return "screen";
     }
     if (p.getDistanceFrom (gearC) < 20.0f) return "gear";
-    if (p.getDistanceFrom (bypassC) < 18.0f) return "bypass";
+    p.y -= tubeOff();      // tube block
     if (Rectangle<float> (ovsC.x - 34, ovsC.y - 12, 68, 24).contains (p)) return "ovs";
     if (Rectangle<float> (linC.x - 26, linC.y - 12, 52, 24).contains (p)) return "lin";
     if (Rectangle<float> (masterC.x - 30, masterC.y - 12, 58, 24).contains (p)) return "master";
@@ -354,6 +387,10 @@ String BreatheEditor::getTooltip()
         if (off) return Help::tip ("age", lang) + "\n\n" + Help::tip ("ageOff", lang);
     }
     if (key == "tabEq" || key == "tabDyn" || key == "advThr") return Help::tip (key == "advThr" ? "advComp" : "advScreen", lang);
+    if (key.startsWith ("slot")) return Help::tip ("slots", lang);
+    if (key.startsWith ("mon")) return Help::tip ("monitor", lang);
+    if (key == "modeMS" || key == "modeLR") return Help::tip ("procMode", lang);
+    if (key == "sideA" || key == "sideB" || key == "advSideA" || key == "advSideB") return Help::tip ("side", lang);
     return key.isEmpty() ? String() : Help::tip (key.toRawUTF8(), lang);
 }
 
@@ -367,19 +404,19 @@ Rectangle<float> BreatheEditor::tourTarget (const String& n)
     else if (n == Params::band[1]) r = knobRect (1);
     else if (n == Params::band[2]) r = knobRect (2);
     else if (n == Params::band[3]) r = knobRect (3);
-    else if (n == "screen") r = scr.expanded (6.0f);
-    else if (n == "tube") r = tubeWin.expanded (14.0f).withTop (90.0f);
-    else if (n == "ovs") r = Rectangle<float> (ovsC.x - 38, ovsC.y - 14, 76, 28);
-    else if (n == "lin") r = Rectangle<float> (linC.x - 30, linC.y - 14, 60, 28);
-    else if (n == "mix") r = Rectangle<float> (knobDefs[4].x - 40, knobDefs[4].y - 40, 80, 100);
-    else if (n == "age") r = Rectangle<float> (knobDefs[5].x - 40, knobDefs[5].y - 40, 80, 100);
-    else if (n == "output") r = Rectangle<float> (knobDefs[6].x - 40, knobDefs[6].y - 40, 80, 100);
-    else if (n == "in") r = Rectangle<float> (knobDefs[7].x - 40, knobDefs[7].y - 40, 80, 100);
-    else if (n == "mode") r = Rectangle<float> (masterC.x - 34, masterC.y - 14, 104, 28);
-    else if (n == "bypass") r = Rectangle<float> (bypassC.x - 30, bypassC.y - 24, 60, 64);
+    else if (n == "screen") r = scr.expanded (6.0f).translated (0.0f, splitOff());
+    else if (n == "tube") r = tubeWin.expanded (14.0f).withTop (90.0f).translated (0.0f, tubeOff());
+    else if (n == "ovs") r = Rectangle<float> (ovsC.x - 38, ovsC.y - 14, 76, 28).translated (0.0f, tubeOff());
+    else if (n == "lin") r = Rectangle<float> (linC.x - 30, linC.y - 14, 60, 28).translated (0.0f, tubeOff());
+    else if (n == "mix") r = Rectangle<float> (knobDefs[4].x - 40, knobDefs[4].y - 40, 80, 100).translated (0.0f, splitOff());
+    else if (n == "age") r = Rectangle<float> (knobDefs[5].x - 40, knobDefs[5].y - 40, 80, 100).translated (0.0f, splitOff());
+    else if (n == "output") r = Rectangle<float> (knobDefs[6].x - 40, knobDefs[6].y - 40, 80, 100).translated (0.0f, splitOff());
+    else if (n == "in") r = Rectangle<float> (knobDefs[7].x - 40, knobDefs[7].y - 40, 80, 100).translated (0.0f, splitOff());
+    else if (n == "mode") r = Rectangle<float> (masterC.x - 34, masterC.y - 14, 104, 28).translated (0.0f, tubeOff());
+    else if (n == "bypass") r = Rectangle<float> (8, -40, 44, 40);
     else if (n == "gear") r = Rectangle<float> (gearC.x - 24, gearC.y - 24, 48, 48);
-    else if (n == "adv") r = Rectangle<float> (492, stripY() - 1, 196, 36);
-    return r * s;
+    else if (n == "adv") r = Rectangle<float> (492, stripY() - 1 + splitOff(), 196, 36);
+    return r * s + origin();   // body space
 }
 
 //==============================================================================
@@ -391,7 +428,20 @@ void BreatheEditor::buildPanel (float phys)
     panelScale = phys;
     panelTheme = t.name;
     Graphics g (panel);
-    g.addTransform (AffineTransform::scale (s * phys));
+    g.fillAll (Colour (0xff0d0d0f));
+    g.addTransform (toScreen().scaled (phys));
+    {
+        // header bar (body y -40..0)
+        const Rectangle<float> hb (0.0f, -(float) headerH, W, (float) headerH);
+        g.setGradientFill (ColourGradient (Colour (0xff17171a), 0, hb.getY(), Colour (0xff09090b), 0, hb.getBottom(), false));
+        g.fillRect (hb);
+        g.setTiledImageFill (grainTile, 0, 0, 0.6f);
+        g.fillRect (hb);
+        g.setColour (Colours::white.withAlpha (0.06f)); g.fillRect (0.0f, hb.getY(), W, 1.0f);
+        g.setColour (Colours::black); g.fillRect (0.0f, -1.5f, W, 1.5f);
+    }
+    ignoreUnused (s);
+    const float H = BreatheEditor::baseH + splitOff();      // the main panel grows when split
 
     const Colour pc = panelColour (t);
     Random r (4321);
@@ -481,6 +531,8 @@ void BreatheEditor::buildPanel (float phys)
     const Font labelFont = uiFont (10.5f, true, 0.28f);
     engrave (g, t, "PRIMAL RAGE LAB", 130, 64, labelFont, Justification::centredLeft, t.mute);
 
+    g.saveState();
+    g.addTransform (AffineTransform::translation (0.0f, tubeOff()));
     // "ANALOG COLOR / PROCESSOR" plate above the tube: both lines exactly the same width
     {
         // line 1 with the house letter-spacing; line 2 spread letter by letter so that
@@ -542,9 +594,12 @@ void BreatheEditor::buildPanel (float phys)
         engrave (g, t, s2, cx + 114, meterY ((float) db), small, Justification::centredLeft, t.mute, 30);
     }
 
-    // knob scales, grooves and names
-    for (int k = 0; k < numKnobs; ++k)
+    g.restoreState();
+    // knob scales, grooves and names (the small knobs move down with the lower part when split)
+    for (int k = 0; k < (split ? 12 : 8); ++k)
     {
+        Graphics::ScopedSaveState ks (g);
+        if (k >= 4 && k < 8) g.addTransform (AffineTransform::translation (0.0f, splitOff()));
         const auto& d = knobDefs[k];
         const int n = d.big ? 11 : 7;
         const float R = d.r + (d.big ? 27.0f : 15.0f);
@@ -573,11 +628,10 @@ void BreatheEditor::buildPanel (float phys)
         else
             engrave (g, t, d.name, d.x, d.y + 46, uiFont (10.0f, true, 0.05f), Justification::centred, t.ink, 100);
     }
-    engrave (g, t, "BYPASS", bypassC.x, bypassC.y + 31, uiFont (9.0f, true, 0.05f), Justification::centred, t.mute, 100);
 
     // screen bezel
     {
-        const auto b = scr.expanded (9.0f);
+        const auto b = scr.expanded (9.0f).translated (0.0f, splitOff());
         g.setColour (Colours::black.withAlpha (0.65f));
         g.fillRoundedRectangle (b.translated (0, 4), 15);
         ColourGradient gr (Colour (0xff3a3a41), 0, b.getY(), Colour (0xff101012), 0, b.getBottom(), false);
@@ -1230,17 +1284,17 @@ void BreatheEditor::paint (Graphics& g)
     const float phys = (float) g.getInternalContext().getPhysicalPixelScaleFactor();
     physScale = phys;
     if (! panel.isValid() || panelScale != phys || panelTheme != look.theme().name
-        || panel.getWidth() != roundToInt ((float) getWidth() * phys))
+        || panel.getWidth() != roundToInt ((float) getWidth() * phys) || panel.getHeight() != roundToInt ((float) getHeight() * phys))
         buildPanel (phys);
     g.drawImageTransformed (panel, AffineTransform::scale (1.0f / phys));
 
     const auto& t = look.theme();
-    const float s = scale();
-    g.addTransform (AffineTransform::scale (s));
+    g.addTransform (toScreen());
     auto visible = [&g] (Rectangle<float> r) { return g.clipRegionIntersects (r.getSmallestIntegerContainer().expanded (4)); };
 
-    if (visible (Rectangle<float> (cx - 140, 80, 280, 298)))
     {
+        Graphics::ScopedSaveState tubeSpace (g);
+        g.addTransform (AffineTransform::translation (0.0f, tubeOff()));
         drawTube (g);
         drawMeter (g, cx - 96, meterL[0], peakL[0]);
         drawMeter (g, cx + 96, meterL[1], peakL[1]);
@@ -1251,28 +1305,57 @@ void BreatheEditor::paint (Graphics& g)
         drawSwitchText (g, "MASTER", masterC, ! mixOn);
         drawSwitchText (g, "MIX", mixC, mixOn);
     }
-    if (visible (scr.expanded (4)))
+    {
+        Graphics::ScopedSaveState screenSpace (g);
+        g.addTransform (AffineTransform::translation (0.0f, splitOff()));
         drawScreen (g);
+    }
 
     const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
     for (int k = 0; k < numKnobs; ++k)
     {
+        if (k >= 8 && ! split) break;
         if (! visible (knobArea (k))) continue;
+        Graphics::ScopedSaveState ks (g);
+        if (k >= 4 && k < 8) g.addTransform (AffineTransform::translation (0.0f, splitOff()));
         drawKnob (g, k, k == hoverKnob || k == dragKnob);
-        if (k < 4)
+        if (k < 4 || k >= 8)
         {
+            const int b = k < 4 ? k : k - 8;
             g.setFont (uiFont (10.0f));
             g.setColour (t.mute);
-            g.drawText (freqShort (edges[k]) + String::fromUTF8 ("\xe2\x80\x93") + freqShort (edges[k + 1]) + " Hz",
+            g.drawText (freqShort (edges[b]) + String::fromUTF8 ("\xe2\x80\x93") + freqShort (edges[b + 1]) + " Hz",
                         Rectangle<float> (knobDefs[k].x - 80, knobDefs[k].y + 124, 160, 14), Justification::centred);
         }
     }
-    if (visible (Rectangle<float> (bypassC.x - 24, bypassC.y - 24, 48, 48)))
-        drawJewel (g, bypassC, 12.0f, bypassed(), Colour (0xffff3a3a));
-    if (advOpen && visible (Rectangle<float> (0, H, W, (float) advH)))
-        drawAdvanced (g);
-    if (visible (Rectangle<float> (0, stripY(), W, (float) stripH)))
-        drawStrip (g);
+    // split view: which side each row works on
+    if (split)
+    {
+        const bool ms = procModeParam->getValue() < 0.5f;
+        for (int row = 0; row < 2; ++row)
+        {
+            const String tag = row == 0 ? (ms ? "M" : "L") : (ms ? "S" : "R");
+            const float yy = row == 0 ? knobDefs[0].y : knobDefs[8].y;
+            g.setFont (uiFont (26.0f, true));
+            for (const float xx : { 62.0f, W - 62.0f })
+            {
+                g.setColour (t.accent.withAlpha (0.25f));
+                g.drawText (tag, Rectangle<float> (xx - 20, yy - 18, 40, 36).translated (0, 1.5f), Justification::centred);
+                g.setColour (t.accentHi);
+                g.drawText (tag, Rectangle<float> (xx - 20, yy - 18, 40, 36), Justification::centred);
+            }
+        }
+    }
+    {
+        Graphics::ScopedSaveState lower (g);
+        g.addTransform (AffineTransform::translation (0.0f, splitOff()));
+        if (advOpen && visible (Rectangle<float> (0, H, W, (float) advH)))
+            drawAdvanced (g);
+        if (visible (Rectangle<float> (0, stripY(), W, (float) stripH)))
+            drawStrip (g);
+    }
+    if (visible (Rectangle<float> (0, -(float) headerH, W, (float) headerH)))
+        drawHeader (g);
 }
 
 //==============================================================================
@@ -1343,8 +1426,8 @@ void BreatheEditor::tick (double dt)
         }
     }
 
-    repaint (toPixels (Rectangle<float> (cx - 142, 78, 284, 302)));
-    repaint (toPixels (scr.expanded (6)));
+    repaint (toPixels (Rectangle<float> (cx - 142, 78, 284, 302).translated (0.0f, tubeOff())));
+    repaint (toPixels (scr.expanded (6).translated (0.0f, splitOff())));
 
     // Advanced panel: which screen, its scope data, repaint
     if (advView == 1 && ! dynSticky && dragAdv < 0 && ! dragThr && clock > dynHoldUntil) advView = 0;
@@ -1375,11 +1458,18 @@ void BreatheEditor::tick (double dt)
         const float gr = dynBand < 2 ? proc.optoGr[dynBand].load() : 0.0f;
         grShown += (gr - grShown) * jmin (1.0f, fdt * 12.0f);
         liftShown += ((dynBand >= 2 ? proc.liftDb[dynBand].load() : 0.0f) - liftShown) * jmin (1.0f, fdt * 10.0f);
+        for (int b = 0; b < 4; ++b)
+        {
+            const float tgt = ! bandOn (b) ? 0.0f : b < 2 ? -proc.optoGr[b].load() : proc.liftDb[b].load();
+            auto& v = bandDynShown[b];
+            v += (tgt - v) * jmin (1.0f, fdt * (std::abs (tgt) > std::abs (v) ? 14.0f : 6.0f));
+        }
         grHist[(size_t) grPos] = grShown;
         grPos = (grPos + 1) % (int) grHist.size();
-        repaint (toPixels (Rectangle<float> (0, H, W, (float) advH)));
+        repaint (toPixelsLower (Rectangle<float> (0, H, W, (float) advH)));
     }
-    repaint (toPixels (Rectangle<float> (0, stripY(), W, (float) stripH)));
+    repaint (toPixelsLower (Rectangle<float> (0, stripY(), W, (float) stripH)));
+    repaint (toPixels (Rectangle<float> (0, -(float) headerH, W, (float) headerH)));
 
     // knobs only when something about them changed
     String sig;
@@ -1392,7 +1482,6 @@ void BreatheEditor::tick (double dt)
     {
         knobSignature = sig;
         for (int k = 0; k < numKnobs; ++k) repaint (toPixels (knobArea (k)));
-        repaint (toPixels (Rectangle<float> (bypassC.x - 30, bypassC.y - 30, 60, 60)));
     }
 }
 
@@ -1422,8 +1511,8 @@ void BreatheEditor::mouseMove (const MouseEvent& e)
     else if (key == "solo" || key == "mute" || key == "ovs" || key == "lin" || key == "gear" || key == "bypass" || key == "master" || key == "mixMode"
              || key == "logo" || key == "adv" || key == "advReset" || key == "tabEq" || key == "tabDyn") c = MouseCursor::PointingHandCursor;
     else if (key == "advThr") c = MouseCursor::UpDownResizeCursor;
-    else if (key.startsWith ("adv") && advKnobAt (mouse) >= 0 && bandOn (advKnobAt (mouse) / 3)) c = MouseCursor::UpDownResizeCursor;
-    hoverAdv = advKnobAt (mouse);
+    else if (key.startsWith ("adv") && advKnobAt (lowerOf (mouse)) >= 0 && bandOn (advKnobAt (lowerOf (mouse)) / 3)) c = MouseCursor::UpDownResizeCursor;
+    hoverAdv = advKnobAt (lowerOf (mouse));
     setMouseCursor (c);
 }
 
@@ -1439,11 +1528,14 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
 {
     mouse = toLogical (e.position);
     const auto key = hitKey (mouse);
+    if (mouse.y < 0.0f) { if (key.isNotEmpty()) headerClick (key); return; }
+    proc.undoManager.beginNewTransaction();
     if (key == "logo") { showAbout(); return; }
+    if (key == "advSideA" || key == "advSideB") { advSide = key == "advSideA" ? 0 : 1; if (! split) side = advSide; remap(); return; }
     if (key == "adv") { setAdvancedOpen (! advOpen); return; }
     if (key == "advReset")
     {
-        for (auto* p : advParam) { p->beginChangeGesture(); p->setValueNotifyingHost (p->convertTo0to1 (0.0f)); p->endChangeGesture(); }
+        for (auto* p : advParam) { p->beginChangeGesture(); p->setValueNotifyingHost (p->convertTo0to1 (0.0f)); mirror (p); p->endChangeGesture(); }
         return;
     }
     if (key == "tabEq") { advView = 0; dynSticky = false; return; }
@@ -1454,11 +1546,12 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
         dragAdvStart = advParam[dynBand * 3 + 2]->convertFrom0to1 (advParam[dynBand * 3 + 2]->getValue());
         dragAdvAccum = 0.0f;
         dragLastY = e.position.y;
+        copySideFrom (sideOf (advParam[dynBand * 3 + 2]));
         advParam[dynBand * 3 + 2]->beginChangeGesture();
         return;
     }
     {
-        const int a = advKnobAt (mouse);
+        const int a = advKnobAt (lowerOf (mouse));
         if (a >= 0)
         {
             if (! bandOn (a / 3)) return;
@@ -1467,6 +1560,7 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
             dragAdvStart = advParam[a]->convertFrom0to1 (advParam[a]->getValue());
             dragAdvAccum = 0.0f;
             dragLastY = e.position.y;
+            copySideFrom (sideOf (advParam[a]));
             advParam[a]->beginChangeGesture();
             return;
         }
@@ -1497,6 +1591,7 @@ void BreatheEditor::mouseDown (const MouseEvent& e)
     dragKnob = knobAt (mouse);
     if (dragKnob >= 0)
     {
+        copySideFrom (sideOf (knobParam[dragKnob]));
         knobParam[dragKnob]->beginChangeGesture();
         dragLastY = e.position.y;
     }
@@ -1535,6 +1630,7 @@ void BreatheEditor::mouseDrag (const MouseEvent& e)
         const float dy = (dragLastY - e.position.y) / scale();
         dragLastY = e.position.y;
         p->setValueNotifyingHost (jlimit (0.0f, 1.0f, p->getValue() + dy / (e.mods.isShiftDown() ? 900.0f : 220.0f)));
+        mirror (p);
     }
 }
 
@@ -1561,7 +1657,7 @@ void BreatheEditor::mouseDoubleClick (const MouseEvent& e)
         xoParam[xi]->endChangeGesture();
         return;
     }
-    const int a = advKnobAt (mouse);
+    const int a = advKnobAt (lowerOf (mouse));
     if (a >= 0 && bandOn (a / 3))
     {
         advParam[a]->beginChangeGesture();
@@ -1572,8 +1668,11 @@ void BreatheEditor::mouseDoubleClick (const MouseEvent& e)
     const int k = knobAt (mouse);
     if (k >= 0)
     {
+        proc.undoManager.beginNewTransaction();
+        copySideFrom (sideOf (knobParam[k]));
         knobParam[k]->beginChangeGesture();
         setParam (knobParam[k], knobDefs[k].def);
+        mirror (knobParam[k]);
         knobParam[k]->endChangeGesture();
     }
 }
@@ -1581,7 +1680,7 @@ void BreatheEditor::mouseDoubleClick (const MouseEvent& e)
 void BreatheEditor::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails& w)
 {
     {
-        const int a = advKnobAt (toLogical (e.position));
+        const int a = advKnobAt (lowerOf (toLogical (e.position)));
         if (a >= 0)
         {
             if (! bandOn (a / 3) || w.deltaY == 0.0f) return;
@@ -1591,6 +1690,7 @@ void BreatheEditor::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails
             float d = w.deltaY * (fine ? 1.0f : 20.0f);
             if (std::abs (d) < 0.1f) d = d > 0 ? 0.1f : -0.1f;
             auto* p = advParam[a];
+            copySideFrom (sideOf (p));
             p->beginChangeGesture();
             setAdvValue (a, p->convertFrom0to1 (p->getValue()) + d);
             p->endChangeGesture();
@@ -1600,8 +1700,10 @@ void BreatheEditor::mouseWheelMove (const MouseEvent& e, const MouseWheelDetails
     const int k = knobAt (toLogical (e.position));
     if (k < 0) return;
     auto* p = knobParam[k];
+    copySideFrom (sideOf (p));
     p->beginChangeGesture();
     p->setValueNotifyingHost (jlimit (0.0f, 1.0f, p->getValue() + w.deltaY * (e.mods.isShiftDown() ? 0.01f : 0.05f)));
+    mirror (p);
     p->endChangeGesture();
 }
 
@@ -1689,18 +1791,91 @@ int BreatheEditor::advKnobAt (Point<float> p) const
     return -1;
 }
 
-bool BreatheEditor::bandOn (int b) const { return Dsp::isOn (knobParam[b]->convertFrom0to1 (knobParam[b]->getValue())); }
+bool BreatheEditor::sideBandOn (int s, int b) const
+{
+    auto* p = s == 0 ? band1Param[b] : band2Param[b];
+    return Dsp::isOn (p->convertFrom0to1 (p->getValue()));
+}
+
+bool BreatheEditor::bandOn (int b) const { return sideBandOn (editSide(), b); }
 
 bool BreatheEditor::advActive() const
 {
-    for (int b = 0; b < 4; ++b) if (bandOn (b)) return true;
+    for (int b = 0; b < 4; ++b) if (sideBandOn (0, b) || sideBandOn (1, b)) return true;
     return false;
+}
+
+void BreatheEditor::remap()
+{
+    for (int b = 0; b < 4; ++b)
+    {
+        knobParam[b] = (split || side == 0) ? band1Param[b] : band2Param[b];
+        knobParam[8 + b] = band2Param[b];
+    }
+    const int es = editSide();
+    for (int i = 0; i < 12; ++i) advParam[i] = es == 0 ? advA[i] : advB[i];
+    knobSignature = {};
+    for (auto& c : knobCache) c = {};
+    repaint();
+}
+
+int BreatheEditor::sideOf (RangedAudioParameter* p) const
+{
+    for (int i = 0; i < 4; ++i) { if (p == band1Param[i]) return 0; if (p == band2Param[i]) return 1; }
+    for (int i = 0; i < 12; ++i) { if (p == advA[i]) return 0; if (p == advB[i]) return 1; }
+    return -1;
+}
+
+void BreatheEditor::mirror (RangedAudioParameter* p)
+{
+    if (! linked()) return;
+    for (int i = 0; i < 4; ++i)
+    {
+        if (p == band1Param[i]) band2Param[i]->setValueNotifyingHost (p->getValue());
+        if (p == band2Param[i]) band1Param[i]->setValueNotifyingHost (p->getValue());
+    }
+    for (int i = 0; i < 12; ++i)
+    {
+        if (p == advA[i]) advB[i]->setValueNotifyingHost (p->getValue());
+        if (p == advB[i]) advA[i]->setValueNotifyingHost (p->getValue());
+    }
+}
+
+// Linked: the side you grab hands all its settings to the other side
+void BreatheEditor::copySideFrom (int s)
+{
+    if (s < 0 || ! linked()) return;
+    for (int i = 0; i < 4; ++i)
+    {
+        auto* from = s == 0 ? band1Param[i] : band2Param[i];
+        auto* to = s == 0 ? band2Param[i] : band1Param[i];
+        if (std::abs (from->getValue() - to->getValue()) > 1.0e-6f) to->setValueNotifyingHost (from->getValue());
+    }
+    for (int i = 0; i < 12; ++i)
+    {
+        auto* from = s == 0 ? advA[i] : advB[i];
+        auto* to = s == 0 ? advB[i] : advA[i];
+        if (std::abs (from->getValue() - to->getValue()) > 1.0e-6f) to->setValueNotifyingHost (from->getValue());
+    }
+}
+
+void BreatheEditor::setSplit (bool on)
+{
+    if (on == split) return;
+    split = on;
+    proc.apvts.state.setProperty ("split", on, nullptr);
+    remap();
+    applySizeLimits();
+    setSize (getWidth(), roundToInt ((float) getWidth() * logicalH() / W));
+    panel = {};
+    repaint();
 }
 
 void BreatheEditor::setAdvValue (int i, float plain)
 {
     const float v = jlimit (-100.0f, 100.0f, std::round (plain * 10.0f) / 10.0f);
     advParam[i]->setValueNotifyingHost (advParam[i]->convertTo0to1 (v));
+    mirror (advParam[i]);
 }
 
 void BreatheEditor::touchAdv (int i)
@@ -1762,6 +1937,8 @@ void BreatheEditor::drawAdvStatic (Graphics& g)
 {
     const auto& t = look.theme();
     const Colour pc = panelColour (t);
+    Graphics::ScopedSaveState lowerSpace (g);
+    g.addTransform (AffineTransform::translation (0.0f, splitOff()));
     if (advOpen)
     {
         const Rectangle<float> a (0.0f, H, W, (float) advH);
@@ -1844,6 +2021,23 @@ void BreatheEditor::drawAdvanced (Graphics& g)
         g.drawText (i == 0 ? "EQ" : "DYN", r, Justification::centred);
     }
 
+    // which side the trims edit (only when the sides are not linked)
+    if (! linked())
+    {
+        const bool ms = procModeParam->getValue() < 0.5f;
+        for (int i = 0; i < 2; ++i)
+        {
+            const Rectangle<float> r (78.0f + (float) i * 34.0f, H + 22.0f, 30.0f, 18.0f);
+            const bool on = editSide() == i;
+            g.setColour (on ? acc.withAlpha (0.22f) : Colour (0xff1c1c20));
+            g.fillRoundedRectangle (r, 9.0f);
+            g.setColour (on ? acc.withAlpha (0.8f) : Colour (0xff3a3a40));
+            g.drawRoundedRectangle (r, 9.0f, 1.0f);
+            g.setColour (on ? t.accentHi : Colour (0xff8a8a90));
+            g.setFont (uiFont (10.0f, true));
+            g.drawText (i == 0 ? (ms ? "M" : "L") : (ms ? "S" : "R"), r, Justification::centred);
+        }
+    }
     // knob groups
     const Colour ink = t.lightBg ? Colour (0xff1e1300) : Colour (0xfff2f2f5);
     for (int b = 0; b < 4; ++b)
@@ -1936,7 +2130,7 @@ void BreatheEditor::drawEqScreen (Graphics& g, Rectangle<float> sR)
         g.drawText ((d > 0 ? "+" : "") + String ((int) d), Rectangle<float> (x + 4, Y (d) - 6, 22, 12), Justification::centredLeft);
     }
 
-    // drive glow per band
+    // drive glow per band: the deepest layer, a dim light spreading from the middle of the band to its edges
     const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
     float glow[4] {};
     for (int b = 0; b < 4; ++b)
@@ -1945,8 +2139,13 @@ void BreatheEditor::drawEqScreen (Graphics& g, Rectangle<float> sR)
         const float df = tr < 0.0f ? 1.0f + tr : 1.0f + 2.0f * tr;
         glow[b] = bandOn (b) && audible (b) ? jlimit (0.0f, 1.0f, 0.1f + 0.45f * Dsp::taper (value (b)) * df) : 0.0f;
         if (byp) glow[b] *= 0.3f;
+        if (glow[b] <= 0.0f) continue;
         const float x0 = X (edges[b]), x1 = X (edges[b + 1]);
-        g.setGradientFill (ColourGradient (acc.withAlpha (0.7f * glow[b]), 0, y + h, acc.withAlpha (0.0f), 0, y + h * 0.1f, false));
+        ColourGradient gh (acc.withAlpha (0.0f), x0, 0, acc.withAlpha (0.0f), x1, 0, false);
+        gh.addColour (0.5, acc.withAlpha (0.30f * glow[b]));
+        gh.addColour (0.25, acc.withAlpha (0.16f * glow[b]));
+        gh.addColour (0.75, acc.withAlpha (0.16f * glow[b]));
+        g.setGradientFill (gh);
         g.fillRect (x0, y, x1 - x0, h);
     }
     // spectrum
@@ -1961,6 +2160,22 @@ void BreatheEditor::drawEqScreen (Graphics& g, Rectangle<float> sR)
         g.fillPath (sp);
         g.setColour (Colours::white.withAlpha (0.16f));
         g.strokePath (sp, PathStrokeType (1.0f));
+    }
+    // what the band dynamics do right now: opto squeeze pressed down from 0 dB, lift raised up from it
+    for (int b = 0; b < 4; ++b)
+    {
+        const float d = bandDynShown[b];
+        if (std::abs (d) < 0.03f) continue;
+        const float x0 = X (edges[b]) + 3.0f, x1 = X (edges[b + 1]) - 3.0f;
+        const float y0 = Y (0.0f), y1 = Y (d * 2.5f);         // drawn 2.5x taller than the curve scale so small moves read; the number is the real dB
+        const Rectangle<float> r (x0, jmin (y0, y1), x1 - x0, std::abs (y1 - y0));
+        const Colour lc = t.accentHi.interpolatedWith (Colours::white, 0.45f);
+        g.setColour (lc.withAlpha (byp ? 0.1f : 0.24f));
+        g.fillRect (r);
+        g.setColour (lc.withAlpha (byp ? 0.25f : 0.6f));
+        g.setFont (uiFont (9.0f, true));
+        g.drawText ((d > 0 ? "+" : "-") + String (std::abs (d), 1),
+                    Rectangle<float> (x0, d > 0 ? y1 - 14.0f : y1 + 2.0f, x1 - x0, 12.0f), Justification::centred);
     }
     // crossovers
     for (int i = 0; i < 3; ++i)
@@ -2275,7 +2490,7 @@ void BreatheEditor::showAbout()
 
 void AboutOverlay::paint (Graphics& g)
 {
-    const float s = (float) getWidth() / (float) BreatheEditor::baseW;
+    const float s = jmin ((float) getWidth() / (float) BreatheEditor::baseW, (float) getHeight() / 600.0f);
     g.fillAll (Colours::black.withAlpha (0.72f));
     const Rectangle<float> card ((float) getWidth() * 0.5f - 270.0f * s, (float) getHeight() * 0.5f - 210.0f * s, 540.0f * s, 420.0f * s);
     g.setColour (Colour (0xff17171a));
@@ -2315,4 +2530,192 @@ void AboutOverlay::paint (Graphics& g)
     g.setFont (uiFont (10.0f * s));
     g.setColour (Colour (0xff77777d));
     g.drawText (String::fromUTF8 ("\xc2\xa9 2026 Primal Rage Lab. Click anywhere to close."), Rectangle<float> (card.getX(), card.getBottom() - 34.0f * s, card.getWidth(), 14.0f * s), Justification::centred);
+}
+
+//==============================================================================
+// Header: power, undo / redo, A B C D, copy / paste, reset, AUTO OUT / IN, listen, channel mode, link, split
+namespace
+{
+    struct HItem { const char* key; float x, w; };
+    const HItem headerItems[] = {
+        { "power", 30, 34 }, { "undo", 82, 30 }, { "redo", 114, 30 },
+        { "slotA", 162, 24 }, { "slotB", 188, 24 }, { "slotC", 214, 24 }, { "slotD", 240, 24 },
+        { "copy", 298, 50 }, { "paste", 358, 54 }, { "reset", 424, 54 },
+        { "autoOut", 642, 40 }, { "autoIn", 690, 40 },
+        { "monM", 742, 26 }, { "monS", 770, 26 }, { "monL", 798, 26 }, { "monR", 826, 26 }, { "monMono", 866, 46 },
+        { "modeMS", 932, 40 }, { "modeLR", 972, 40 },
+        { "sideA", 1026, 26 }, { "link", 1058, 30 }, { "sideB", 1090, 26 },
+        { "split", 1138, 34 },
+    };
+}
+
+String BreatheEditor::headerKeyAt (Point<float> p) const
+{
+    if (p.y < 0.0f || p.y > (float) headerH) return {};
+    for (const auto& it : headerItems)
+        if (std::abs (p.x - it.x) <= it.w * 0.5f + 1.0f) return it.key;
+    return {};
+}
+
+void BreatheEditor::headerClick (const String& key)
+{
+    auto setChoice = [] (RangedAudioParameter* p, int index)
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) index));
+        p->endChangeGesture();
+    };
+    if (key == "undo") { proc.undoManager.undo(); remap(); return; }
+    if (key == "redo") { proc.undoManager.redo(); remap(); return; }
+    if (key.startsWith ("slot")) { proc.selectSlot (key.getLastCharacter() - 'A'); remap(); return; }
+    if (key == "copy") { proc.copySettings(); return; }
+    if (key == "paste") { proc.pasteSettings(); remap(); return; }
+    if (key == "reset") { proc.resetAll(); remap(); return; }
+    if (key == "split") { setSplit (! split); return; }
+    if (key == "sideA" || key == "sideB") { side = advSide = key == "sideA" ? 0 : 1; remap(); return; }
+    proc.undoManager.beginNewTransaction();
+    if (key == "power") toggle (bypassParam);
+    else if (key == "autoOut") toggle (autoOutParam);
+    else if (key == "autoIn") toggle (autoInParam);
+    else if (key == "link") { toggle (linkParam); remap(); }
+    else if (key == "modeMS" || key == "modeLR") setChoice (procModeParam, key == "modeMS" ? 0 : 1);
+    else if (key.startsWith ("mon"))
+    {
+        const int idx = key == "monM" ? 1 : key == "monS" ? 2 : key == "monL" ? 3 : key == "monR" ? 4 : 5;
+        const int cur = (int) monitorParam->convertFrom0to1 (monitorParam->getValue());
+        setChoice (monitorParam, cur == idx ? 0 : idx);
+    }
+}
+
+void BreatheEditor::drawHeader (Graphics& g)
+{
+    Graphics::ScopedSaveState ss (g);
+    g.addTransform (AffineTransform::translation (0.0f, -(float) headerH));
+    const auto& t = look.theme();
+    const Colour acc = t.accent, idle (0xffa2a2aa), dim (0xff4c4c52);
+    const float cy = (float) headerH * 0.5f;
+    const String hot = hitKey (mouse);
+    auto colFor = [&] (bool lit, bool enabled, const char* key) { return lit ? acc : enabled ? (hot == key ? Colour (0xffe6e6ea) : idle) : dim; };
+    auto glowText = [&] (const String& txt, Rectangle<float> r, Colour c, bool lit, const Font& f)
+    {
+        g.setFont (f);
+        if (lit)
+        {
+            g.setColour (c.withAlpha (0.28f));
+            for (const auto off : { Point<float> (-1, 0), Point<float> (1, 0), Point<float> (0, -1), Point<float> (0, 1) })
+                g.drawText (txt, r.translated (off.x, off.y), Justification::centred);
+        }
+        g.setColour (c);
+        g.drawText (txt, r, Justification::centred);
+    };
+    auto stroke = [&] (const Path& p, Colour c, bool lit, float w)
+    {
+        if (lit) glowStroke (g, p, c, w, 0.8f);
+        else { g.setColour (c); g.strokePath (p, PathStrokeType (w, PathStrokeType::curved, PathStrokeType::rounded)); }
+    };
+
+    // power
+    {
+        const bool on = ! bypassed();
+        Path p;
+        p.addCentredArc (30.0f, cy + 1.0f, 8.5f, 8.5f, 0.0f, 0.55f, pi * 2.0f - 0.55f, true);
+        p.startNewSubPath (30.0f, cy - 9.5f); p.lineTo (30.0f, cy - 1.0f);
+        stroke (p, colFor (on, true, "power"), on, 2.2f);
+    }
+    // undo / redo
+    for (int i = 0; i < 2; ++i)
+    {
+        const bool can = i == 0 ? proc.undoManager.canUndo() : proc.undoManager.canRedo();
+        const float x = i == 0 ? 82.0f : 114.0f, sg = i == 0 ? 1.0f : -1.0f;
+        Path p;
+        p.startNewSubPath (x + 8.0f * sg, cy + 6.0f);
+        p.quadraticTo (x + 8.0f * sg, cy - 5.0f, x - 3.0f * sg, cy - 5.0f);
+        p.lineTo (x - 8.0f * sg, cy - 5.0f);
+        p.startNewSubPath (x - 4.0f * sg, cy - 9.0f); p.lineTo (x - 8.0f * sg, cy - 5.0f); p.lineTo (x - 4.0f * sg, cy - 1.0f);
+        stroke (p, colFor (false, can, i == 0 ? "undo" : "redo"), false, 1.9f);
+    }
+    // A B C D
+    for (int i = 0; i < 4; ++i)
+    {
+        const bool cur = proc.slot == i;
+        const char* keys[] { "slotA", "slotB", "slotC", "slotD" };
+        glowText (String::charToString ((juce_wchar) ('A' + i)), Rectangle<float> (150.0f + 26.0f * (float) i, 0, 24, (float) headerH),
+                  colFor (cur, true, keys[i]), cur, uiFont (16.0f, true));
+    }
+    glowText ("Copy", Rectangle<float> (273, 0, 50, (float) headerH), colFor (false, true, "copy"), false, uiFont (15.0f, true));
+    glowText ("Paste", Rectangle<float> (331, 0, 54, (float) headerH), colFor (false, proc.clipboard.isValid(), "paste"), false, uiFont (15.0f, true));
+    glowText ("Reset", Rectangle<float> (397, 0, 54, (float) headerH), colFor (false, true, "reset"), false, uiFont (15.0f, true));
+
+    // AUTO OUT (waves going out) / AUTO IN (waves coming in)
+    for (int i = 0; i < 2; ++i)
+    {
+        const bool on = flag (i == 0 ? autoOutParam : autoInParam);
+        const float x = i == 0 ? 642.0f : 690.0f;
+        const Colour c = colFor (on, true, i == 0 ? "autoOut" : "autoIn");
+        Path w;
+        const bool out = i == 0;
+        for (int k = 0; k < 2; ++k)
+        {
+            const float pos = 10.5f + 4.5f * (float) k, rr = 7.5f, sp = pi * 0.3f;
+            // "out": ( ( A ) )   "in": ) ) A ( (
+            const float lc = out ? x - pos + rr : x - pos - rr, rc = out ? x + pos - rr : x + pos + rr;
+            const float la = out ? -pi * 0.5f : pi * 0.5f, ra = out ? pi * 0.5f : -pi * 0.5f;
+            w.addCentredArc (lc, cy, rr, rr, 0.0f, la - sp, la + sp, true);
+            w.addCentredArc (rc, cy, rr, rr, 0.0f, ra - sp, ra + sp, true);
+        }
+        stroke (w, c, on, 1.5f);
+        glowText ("A", Rectangle<float> (x - 8, cy - 9, 16, 18), c, on, uiFont (13.0f, true));
+    }
+    // listen: M S L R mono (pills)
+    {
+        const int cur = (int) monitorParam->convertFrom0to1 (monitorParam->getValue());
+        const char* labels[] { "M", "S", "L", "R", "mono" };
+        const char* keys[] { "monM", "monS", "monL", "monR", "monMono" };
+        const float xs[] { 742, 770, 798, 826, 866 }, ws[] { 24, 24, 24, 24, 44 };
+        for (int i = 0; i < 5; ++i)
+        {
+            const bool on = cur == i + 1;
+            const Rectangle<float> r (xs[i] - ws[i] * 0.5f, cy - 11.0f, ws[i], 22.0f);
+            if (on) { g.setColour (acc.withAlpha (0.22f)); g.fillRoundedRectangle (r, 11.0f); }
+            g.setColour (on ? acc : (hot == keys[i] ? Colour (0xff8a8a92) : Colour (0xff5a5a62)));
+            g.drawRoundedRectangle (r, 11.0f, 1.6f);
+            glowText (labels[i], r, on ? t.accentHi : colFor (false, true, keys[i]), on, uiFont (i == 4 ? 11.0f : 12.5f, true));
+        }
+    }
+    // channel mode M/S | L/R
+    {
+        const bool ms = procModeParam->getValue() < 0.5f;
+        const Rectangle<float> box (912.0f, cy - 11.0f, 80.0f, 22.0f);
+        g.setColour (ms ? acc.withAlpha (0.2f) : Colours::transparentBlack); g.fillRoundedRectangle (box.withWidth (40.0f), 4.0f);
+        g.setColour (! ms ? acc.withAlpha (0.2f) : Colours::transparentBlack); g.fillRoundedRectangle (box.withTrimmedLeft (40.0f), 4.0f);
+        g.setColour (Colour (0xff5a5a62)); g.drawRoundedRectangle (box, 4.0f, 1.4f);
+        g.drawVerticalLine (952, box.getY() + 3, box.getBottom() - 3);
+        glowText ("M/S", box.withWidth (40.0f), ms ? t.accentHi : colFor (false, true, "modeMS"), ms, uiFont (12.0f, true));
+        glowText ("L/R", box.withTrimmedLeft (40.0f), ! ms ? t.accentHi : colFor (false, true, "modeLR"), ! ms, uiFont (12.0f, true));
+    }
+    // side A | link | side B
+    {
+        const bool ms = procModeParam->getValue() < 0.5f, lk = linked();
+        for (int i = 0; i < 2; ++i)
+        {
+            const bool on = lk || split || side == i;
+            const Rectangle<float> r ((i == 0 ? 1026.0f : 1090.0f) - 12.0f, cy - 12.0f, 24.0f, 24.0f);
+            if (on) { g.setColour (acc.withAlpha (0.18f)); g.fillRoundedRectangle (r, 3.0f); }
+            g.setColour (on ? acc : Colour (0xff5a5a62));
+            g.drawRoundedRectangle (r, 3.0f, 1.8f);
+            glowText (i == 0 ? (ms ? "M" : "L") : (ms ? "S" : "R"), r, on ? t.accentHi : colFor (false, true, i == 0 ? "sideA" : "sideB"), on, uiFont (14.0f, true));
+        }
+        Path ch;
+        ch.addRoundedRectangle (1047.0f, cy - 4.5f, 10.0f, 9.0f, 4.5f);
+        ch.addRoundedRectangle (1059.0f, cy - 4.5f, 10.0f, 9.0f, 4.5f);
+        ch.startNewSubPath (1052.0f, cy); ch.lineTo (1064.0f, cy);
+        stroke (ch, colFor (lk, true, "link"), lk, 1.8f);
+    }
+    // split
+    {
+        Path p;
+        p.addRoundedRectangle (1126.0f, cy - 9.0f, 24.0f, 7.5f, 2.5f);
+        p.addRoundedRectangle (1126.0f, cy + 1.5f, 24.0f, 7.5f, 2.5f);
+        stroke (p, colFor (split, true, "split"), split, 1.7f);
+    }
 }

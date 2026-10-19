@@ -34,7 +34,16 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
+    juce::UndoManager undoManager;
     juce::AudioProcessorValueTreeState apvts;
+
+    // A / B / C / D settings slots, copy / paste, full reset (message thread)
+    int slot = 0;
+    juce::ValueTree slots[4], clipboard;
+    void selectSlot (int i);
+    void copySettings() { clipboard = apvts.copyState(); }
+    void pasteSettings();
+    void resetAll();
 
     // ---- read by the editor
     std::atomic<float> inPeak[2] {}, outPeak[2] {};
@@ -62,8 +71,17 @@ private:
     std::atomic<float>* soloP[4] {};
     std::atomic<float>* muteP[4] {};
     std::atomic<float> *mixP = nullptr, *ageP = nullptr, *outP = nullptr, *inP = nullptr, *ovsP = nullptr,
-                       *linP = nullptr, *bypassP = nullptr, *modeP = nullptr;
+                       *linP = nullptr, *bypassP = nullptr, *modeP = nullptr, *monitorP = nullptr;
     std::atomic<float>* advEqP[4] {}, *advDriveP[4] {}, *advDynP[4] {};
+    std::atomic<float> *autoInP = nullptr, *autoOutP = nullptr;
+    // AUTO IN: slow input level -> gain that puts the iron at its working level; AUTO OUT: loudness match
+    double autoInPow = 0.0158, autoOutIn = 1.0e-6, autoOutOut = 1.0e-6;   // 0.0158 = -18 dB RMS
+    bool autoInPrimed = false;
+    Dsp::Biquad kwIn[2][2], kwOut[2][2];                                  // rough K-weighting (low cut + presence shelf)
+    juce::SmoothedValue<float> autoOutS;
+public:
+    std::atomic<float> autoInDb { 0.0f }, autoOutDb { 0.0f };         // what AUTO is doing right now, for the editor
+private:
     float trimEq[4] {}, trimDrive[4] {}, trimDyn[4] {};      // smoothed, -1..+1
 
     // ---- configuration that changes the latency
