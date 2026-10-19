@@ -27,6 +27,8 @@ void defaults (BreatheProcessor& p, bool lin, int ovs)
     setP (p, Params::input, 0); setP (p, Params::mode, 0);
     for (int b = 0; b < 4; ++b) { setP (p, Params::advEq[b], 0); setP (p, Params::advDrive[b], 0); setP (p, Params::advDyn[b], 0); }
     setP (p, Params::autoIn, 0); setP (p, Params::autoOut, 0);
+    for (int b = 0; b < 4; ++b) { setP (p, Params::band2[b], 0); setP (p, Params::advEq2[b], 0); setP (p, Params::advDrive2[b], 0); setP (p, Params::advDyn2[b], 0); }
+    setP (p, Params::link, 1); setP (p, Params::procMode, 0); setP (p, Params::monitor, 0);
 }
 
 AudioBuffer<float> run (BreatheProcessor& p, const AudioBuffer<float>& in, int bs = BS)
@@ -192,7 +194,7 @@ int main (int argc, char** argv)
             ed->hideWelcomeForTest();
             prep (*ed);
             if (spin) for (int i = 0; i < 6; ++i) { auto blk = run (q, in); ed->renderForTest (0.5); }
-            else ed->renderForTest (0.1);
+            else ed->renderForTest (0.5);
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
             File f = outDir.getChildFile (name + ".png");
             f.deleteFile();
@@ -239,6 +241,24 @@ int main (int argc, char** argv)
             { "h_splitU", [&] { setup (false, 0); }, [] (BreatheEditor& e) { e.setSplit (true); } },
             { "h_splitU_lr", [&] { setup (false, 1); }, [] (BreatheEditor& e) { e.setSplit (true); } },
         };
+        // split animation frames (open and close)
+        for (int fr = 0; fr < 2; ++fr)
+        {
+            setup (false, 0);
+            q.apvts.state.setProperty ("split", fr == 1, nullptr);
+            std::unique_ptr<BreatheEditor> ed (dynamic_cast<BreatheEditor*> (q.createEditor()));
+            ed->hideWelcomeForTest();
+            ed->renderForTest (0.5);
+            ed->setSplit (fr == 0);
+            for (int step = 1; step <= 3; ++step)
+            {
+                ed->renderForTest (0.075);
+                auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+                File f = outDir.getChildFile (String (fr == 0 ? "anim_open" : "anim_close") + String (step) + ".png");
+                f.deleteFile();
+                if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
+            }
+        }
         for (int sl = 1; sl < 4; ++sl)
             hv.push_back ({ sl == 1 ? "h_slot1" : sl == 2 ? "h_slot2" : "h_slot3", [&, sl] { setup (true, 0); q.slot = sl; }, none });
         for (auto& v : hv)
@@ -783,6 +803,105 @@ int main (int argc, char** argv)
         for (int i = 0; i < o.getNumSamples(); ++i) { d = jmax (d, (double) std::abs (o.getSample (0, i) - o.getSample (1, i))); finite &= std::isfinite (o.getSample (0, i)); }
         std::cout << "== everything at +100 %, mono in: L-R difference " << d << "\n";
         check (finite && d < 1.0e-6, "mono stays mono with Advanced slammed");
+    }
+
+    // ---------------------------------------------------------------- sides: M/S, L/R, Link
+    {
+        auto in = noise (3.0f, 0.3f, 21);
+        const int skip = (int) (SR * 0.5);
+        auto maxDiff = [] (const AudioBuffer<float>& a, const AudioBuffer<float>& b, int lat, int start, std::function<float (float, float)> f)
+        {
+            double d = 0;
+            for (int i = start; i < a.getNumSamples() - lat; ++i)
+                d = jmax (d, (double) std::abs (f (a.getSample (0, i + lat), a.getSample (1, i + lat)) - f (b.getSample (0, i), b.getSample (1, i))));
+            return d;
+        };
+        auto setSide = [&] (int sd, float amt, float adv)
+        {
+            for (int b = 0; b < 4; ++b)
+            {
+                setP (p, (sd == 0 ? Params::band : Params::band2)[b], amt);
+                setP (p, (sd == 0 ? Params::advEq : Params::advEq2)[b], adv);
+                setP (p, (sd == 0 ? Params::advDrive : Params::advDrive2)[b], adv);
+                setP (p, (sd == 0 ? Params::advDyn : Params::advDyn2)[b], adv);
+            }
+        };
+        for (const bool lin : { true, false })
+        {
+            // linked: the second side's knobs are ignored (side A drives both)
+            defaults (p, lin, 2);
+            setSide (0, 0.7f, 30.0f);
+            prepare (p);
+            auto ref = run (p, in);
+            defaults (p, lin, 2);
+            setSide (0, 0.7f, 30.0f); setSide (1, 0.2f, -60.0f);
+            prepare (p);
+            auto lk = run (p, in);
+            const double dl = maxDiff (lk, ref, 0, skip, [] (float l, float) { return l; });
+            std::cout << "== " << (lin ? "LIN" : "analog") << " linked, side B knobs elsewhere: max difference " << dl << "\n";
+            check (dl < 1.0e-6, "Link on: one set of settings for both sides");
+
+            // unlinked: turning one side's knobs never touches the other side's signal
+            struct Case { int mode, side; const char* what; std::function<float (float, float)> other, own; };
+            const Case cases[] {
+                { 0, 0, "M/S unlinked: Mid knobs leave the Side untouched", [] (float l, float r) { return 0.5f * (l - r); }, [] (float l, float r) { return 0.5f * (l + r); } },
+                { 0, 1, "M/S unlinked: Side knobs leave the Mid untouched", [] (float l, float r) { return 0.5f * (l + r); }, [] (float l, float r) { return 0.5f * (l - r); } },
+                { 1, 0, "L/R unlinked: Left knobs leave the Right untouched", [] (float, float r) { return r; }, [] (float l, float) { return l; } },
+                { 1, 1, "L/R unlinked: Right knobs leave the Left untouched", [] (float l, float) { return l; }, [] (float, float r) { return r; } } };
+            for (const auto& cs : cases)
+            {
+                AudioBuffer<float> o[2];
+                for (int v = 0; v < 2; ++v)
+                {
+                    defaults (p, lin, 2);
+                    setP (p, Params::link, 0); setP (p, Params::procMode, (float) cs.mode);
+                    setSide (1 - cs.side, 0.5f, 0.0f);                        // the other side does its own thing
+                    setSide (cs.side, v == 0 ? 0.8f : 0.3f, v == 0 ? 40.0f : -20.0f);
+                    prepare (p);
+                    o[v] = run (p, in);
+                }
+                const double dOther = maxDiff (o[0], o[1], 0, skip, cs.other), dOwn = maxDiff (o[0], o[1], 0, skip, cs.own);
+                std::cout << "== " << (lin ? "LIN " : "analog ") << cs.what << ": other side " << dOther << ", own side " << dOwn << "\n";
+                check (dOther < 2.0e-5 && dOwn > 1.0e-3, cs.what);
+            }
+        }
+
+        // unlinked with the same settings on both sides, mono in: still mono (L/R) / no side made (M/S)
+        for (int mode = 0; mode < 2; ++mode)
+        {
+            defaults (p, true, 2);
+            setP (p, Params::link, 0); setP (p, Params::procMode, (float) mode);
+            setSide (0, 1.0f, 100.0f); setSide (1, 1.0f, 100.0f);
+            prepare (p);
+            auto mono = noise (2.0f, 0.3f, 5);
+            for (int i = 0; i < mono.getNumSamples(); ++i) mono.setSample (1, i, mono.getSample (0, i));
+            auto o = run (p, mono);
+            double d = 0; bool fin = true;
+            for (int i = 0; i < o.getNumSamples(); ++i) { d = jmax (d, (double) std::abs (o.getSample (0, i) - o.getSample (1, i))); fin &= std::isfinite (o.getSample (0, i)); }
+            std::cout << "== unlinked " << (mode ? "L/R" : "M/S") << ", equal sides slammed, mono in: L-R difference " << d << "\n";
+            check (fin && d < 1.0e-5, "unlinked with equal sides keeps mono mono");
+        }
+
+        // monitor: each listen mode puts the right signal in the centre
+        defaults (p, true, 2);
+        prepare (p);
+        const int lat = p.getLatencySamples();
+        bool monOk = true;
+        for (int mon = 1; mon <= 5; ++mon)
+        {
+            setP (p, Params::monitor, (float) mon);
+            auto o = run (p, in);
+            double d = 0;
+            for (int i = skip; i < in.getNumSamples() - lat; ++i)
+            {
+                const float l = in.getSample (0, i), r = in.getSample (1, i);
+                const float want = mon == 1 || mon == 5 ? 0.5f * (l + r) : mon == 2 ? 0.5f * (l - r) : mon == 3 ? l : r;
+                d = jmax (d, (double) std::abs (o.getSample (0, i + lat) - want) + std::abs (o.getSample (1, i + lat) - want));
+            }
+            monOk &= d < 1.0e-5;
+        }
+        setP (p, Params::monitor, 0);
+        check (monOk, "listen M / S / L / R / mono: the chosen signal, in the centre");
     }
 
     // ---------------------------------------------------------------- AUTO IN / AUTO OUT

@@ -62,7 +62,13 @@ BreatheProcessor::BreatheProcessor()
         advEqP[b] = apvts.getRawParameterValue (Params::advEq[b]);
         advDriveP[b] = apvts.getRawParameterValue (Params::advDrive[b]);
         advDynP[b] = apvts.getRawParameterValue (Params::advDyn[b]);
+        knob2[b] = apvts.getRawParameterValue (Params::band2[b]);
+        advEq2P[b] = apvts.getRawParameterValue (Params::advEq2[b]);
+        advDrive2P[b] = apvts.getRawParameterValue (Params::advDrive2[b]);
+        advDyn2P[b] = apvts.getRawParameterValue (Params::advDyn2[b]);
     }
+    linkP = apvts.getRawParameterValue (Params::link);
+    procModeP = apvts.getRawParameterValue (Params::procMode);
     for (int i = 0; i < 3; ++i) xo[i] = apvts.getRawParameterValue (Params::xover[i]);
     mixP = apvts.getRawParameterValue (Params::mix);
     ageP = apvts.getRawParameterValue (Params::age);
@@ -153,12 +159,17 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
             b.satGain[ch] = 1.0f;
             b.dcX[ch] = b.dcY[ch] = 0.0f;
         }
-        b.pFast = b.pLift = 0.0;
-        b.pRef = 1.0e-6;
-        b.optoF = b.optoS = b.makeup = b.lift = b.sag = 0.0f;
-        b.amount.reset (sr, 0.05);
-        b.amount.setCurrentAndTargetValue (Dsp::taper (knob[bi]->load()));
-        b.act = b.amount.getTargetValue() > 0.0f ? 1.0f : 0.0f;
+        linked = linkP->load() > 0.5f;
+        procMs = procModeP->load() < 0.5f;
+        for (int c = 0; c < 2; ++c)
+        {
+            b.pFast[c] = b.pLift[c] = 0.0;
+            b.pRef[c] = 1.0e-6;
+            b.optoF[c] = b.optoS[c] = b.makeup[c] = b.lift[c] = b.sag[c] = 0.0f;
+            b.amount[c].reset (sr, 0.05);
+            b.amount[c].setCurrentAndTargetValue (Dsp::taper ((c == 0 || linked ? knob : knob2)[bi]->load()));
+            b.act[c] = b.amount[c].getTargetValue() > 0.0f ? 1.0f : 0.0f;
+        }
         b.gain = 1.0f;
         ++bi;
     }
@@ -176,11 +187,19 @@ void BreatheProcessor::prepareToPlay (double sr, int block)
         kwIn[0][ch].k = kwOut[0][ch].k = lc;  kwIn[1][ch].k = kwOut[1][ch].k = hc;
         kwIn[0][ch].reset(); kwIn[1][ch].reset(); kwOut[0][ch].reset(); kwOut[1][ch].reset();
     }
+    for (int sd = 0; sd < 2; ++sd)
+        for (int b = 0; b < 4; ++b)
+        {
+            const bool second = sd == 1 && ! linked;
+            trimEq[sd][b] = (second ? advEq2P : advEqP)[b]->load() * 0.01f;
+            trimDrive[sd][b] = (second ? advDrive2P : advDriveP)[b]->load() * 0.01f;
+            trimDyn[sd][b] = (second ? advDyn2P : advDynP)[b]->load() * 0.01f;
+        }
     modeS.reset (sr, 0.05);   modeS.setCurrentAndTargetValue (modeP->load());
     bypassS.reset (sr, 0.02); bypassS.setCurrentAndTargetValue (bypassP->load() > 0.5f ? 1.0f : 0.0f);
     wetActiveS.reset (sr, 0.02);
     bool anyOn = false;
-    for (int b = 0; b < 4; ++b) anyOn |= Dsp::isOn (knob[b]->load()) || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
+    for (int b = 0; b < 4; ++b) anyOn |= Dsp::isOn (knob[b]->load()) || (! linked && Dsp::isOn (knob2[b]->load())) || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
     wetActiveS.setCurrentAndTargetValue (anyOn ? 1.0f : 0.0f);
     inPow = 0.0;
 
@@ -264,10 +283,25 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     // ---- targets
     bool anySolo = false, anyOn = false;
     for (int b = 0; b < 4; ++b) anySolo |= soloP[b]->load() > 0.5f;
+    {
+        const bool lk = linkP->load() > 0.5f, pm = procModeP->load() < 0.5f;
+        if (lk != linked || pm != procMs)
+        {
+            // the second channel takes over the state of the first, so nothing jumps when Link or the mode flips
+            for (auto& B : bands)
+            {
+                B.pFast[1] = B.pFast[0]; B.pRef[1] = B.pRef[0]; B.pLift[1] = B.pLift[0];
+                B.optoF[1] = B.optoF[0]; B.optoS[1] = B.optoS[0]; B.makeup[1] = B.makeup[0]; B.lift[1] = B.lift[0]; B.sag[1] = B.sag[0];
+            }
+            linked = lk; procMs = pm;
+        }
+    }
     for (int b = 0; b < 4; ++b)
     {
-        bands[b].amount.setTargetValue (Dsp::taper (knob[b]->load()));
-        anyOn |= Dsp::isOn (knob[b]->load()) || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
+        const float a0 = Dsp::taper (knob[b]->load());
+        bands[b].amount[0].setTargetValue (a0);
+        bands[b].amount[1].setTargetValue (linked ? a0 : Dsp::taper (knob2[b]->load()));
+        anyOn |= Dsp::isOn (knob[b]->load()) || (! linked && Dsp::isOn (knob2[b]->load())) || soloP[b]->load() > 0.5f || muteP[b]->load() > 0.5f;
     }
     wetActiveS.setTargetValue (anyOn ? 1.0f : 0.0f);
     mixS.setTargetValue (mixP->load());
@@ -297,11 +331,15 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
     {
         // Advanced trims glide (about 50 ms) so turning them never clicks
         const float a = (float) jmin (1.0, (double) n / (0.05 * sampleRate));
-        for (int b = 0; b < 4; ++b)
+        for (int sd = 0; sd < 2; ++sd)
         {
-            trimEq[b] += a * (advEqP[b]->load() * 0.01f - trimEq[b]);
-            trimDrive[b] += a * (advDriveP[b]->load() * 0.01f - trimDrive[b]);
-            trimDyn[b] += a * (advDynP[b]->load() * 0.01f - trimDyn[b]);
+            const bool second = sd == 1 && ! linked;
+            for (int b = 0; b < 4; ++b)
+            {
+                trimEq[sd][b] += a * ((second ? advEq2P : advEqP)[b]->load() * 0.01f - trimEq[sd][b]);
+                trimDrive[sd][b] += a * ((second ? advDrive2P : advDriveP)[b]->load() * 0.01f - trimDrive[sd][b]);
+                trimDyn[sd][b] += a * ((second ? advDyn2P : advDynP)[b]->load() * 0.01f - trimDyn[sd][b]);
+            }
         }
     }
 
@@ -407,12 +445,24 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
 
     // ---- Pultec curve after the iron and its level return, analog phase in both modes
     {
-        float e[4];
-        for (int b = 0; b < 4; ++b) e[b] = bands[b].amount.getCurrentValue() * Dsp::eqTrim (ms.eq, trimEq[b]);
-        const auto k = Dsp::pultec (sampleRate, e, xoNow, 1.0f);
+        // linked: one curve on L and R. Unlinked: a curve per side, in M/S or L/R.
+        const bool sep = ! linked;
+        const bool toMs = sep && procMs;
+        float* L = wetBuf.getWritePointer (0);
+        float* Rr = wetBuf.getWritePointer (1);
+        if (toMs)
+            for (int i = 0; i < n; ++i) { const float m = 0.5f * (L[i] + Rr[i]), sd = 0.5f * (L[i] - Rr[i]); L[i] = m; Rr[i] = sd; }
+        std::array<Dsp::BiquadCoefs, Dsp::pultecStages> kk[2];
+        for (int sd = 0; sd < (sep ? 2 : 1); ++sd)
+        {
+            float e[4];
+            for (int b = 0; b < 4; ++b) e[b] = bands[b].amount[sd].getCurrentValue() * Dsp::eqTrim (ms.eq, trimEq[sd][b]);
+            kk[sd] = Dsp::pultec (sampleRate, e, xoNow, 1.0f);
+        }
         for (int ch = 0; ch < 2; ++ch)
         {
             float* d = wetBuf.getWritePointer (ch);
+            const auto& k = kk[sep ? ch : 0];
             for (int st = 0; st < Dsp::pultecStages; ++st)
             {
                 const auto& c = k[(size_t) st];
@@ -421,6 +471,8 @@ void BreatheProcessor::processChunk (float* const* io, int numCh, int n)
                 for (int i = 0; i < n; ++i) d[i] = eq[st][ch].process (d[i]);
             }
         }
+        if (toMs)
+            for (int i = 0; i < n; ++i) { const float m = L[i], sd = Rr[i]; L[i] = m + sd; Rr[i] = m - sd; }
     }
 
     // ---- AGE: scrape flutter, only on what sits above ~200 Hz
@@ -508,20 +560,24 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
     auto& B = bands[b];
     auto& buf = bandBuf[b];
     const double fs = sampleRate;
-    const float targetAct = B.amount.getTargetValue() > 0.0f ? 1.0f : 0.0f;
+    const bool lk = linked;
+    const bool conv = ! lk && procMs;          // unlinked M/S: the band is processed as mid and side
+    const int nDet = lk ? 1 : 2;               // linked: one detector for both channels
+    float targetAct[2];
+    for (int c = 0; c < 2; ++c) targetAct[c] = B.amount[c].getTargetValue() > 0.0f ? 1.0f : 0.0f;
     const float actStep = (float) (1.0 / (0.02 * fs));
 
     // the untouched band, delayed like the processed one (for knobs at zero)
     float* d0 = buf.getWritePointer (0);
     float* d1 = buf.getWritePointer (1);
-    if (B.act <= 0.0f && targetAct <= 0.0f)
+    if (! B.active())
     {
         for (int i = 0; i < n; ++i)
         {
             bandDelay[b].pushSample (0, d0[i]); bandDelay[b].pushSample (1, d1[i]);
             if (osLatency > 0) { d0[i] = bandDelay[b].popSample (0, (float) osLatency); d1[i] = bandDelay[b].popSample (1, (float) osLatency); }
         }
-        B.amount.skip (n);
+        B.amount[0].skip (n); B.amount[1].skip (n);
         optoGr[b] = 0.0f; liftDb[b] = 0.0f;
         return;
     }
@@ -534,120 +590,145 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         dl0[i] = osLatency > 0 ? bandDelay[b].popSample (0, (float) osLatency) : d0[i];
         dl1[i] = osLatency > 0 ? bandDelay[b].popSample (1, (float) osLatency) : d1[i];
     }
+    if (conv)
+        for (int i = 0; i < n; ++i)
+        {
+            float m = 0.5f * (d0[i] + d1[i]), sd = 0.5f * (d0[i] - d1[i]); d0[i] = m; d1[i] = sd;
+            m = 0.5f * (dl0[i] + dl1[i]); sd = 0.5f * (dl0[i] - dl1[i]); dl0[i] = m; dl1[i] = sd;
+        }
 
     // ---- dynamics at the base rate: opto squeeze + Dolby-style lift of quiet details
     // COMP trim (LOW, LOW-MID) moves the opto threshold: + lowers it (up to -12 dB) and lets it squeeze up to twice as deep,
     // - raises it (up to +12 dB). LIFT trim (HIGH-MID, HIGH) scales the lift.
-    const float thrOff = b < 2 ? -12.0f * trimDyn[b] : 0.0f;
-    const float oMax = ms.opto[b] * (b < 2 ? 1.0f + jmax (0.0f, trimDyn[b]) : 1.0f);
-    const float lMax = ms.lift[b] * (b >= 2 ? Dsp::dynTrim (trimDyn[b]) : 1.0f);
     auto coef = [fs] (double sec) { return 1.0 - std::exp (-1.0 / (sec * fs)); };
     const double cFast = coef (0.005), cRef = coef (3.0), cRefUp = coef (0.4), cLa = coef (0.003), cLr = coef (0.06), cMeas = coef (0.8);
     // fast opto stage: 30 ms attack lets the first cycles of low notes through (no low-end distortion)
     const float aF = (float) coef (0.030), rF = (float) coef (b == 0 ? 0.080 : 0.070), aS = (float) coef (0.6), rS = (float) coef (1.5), cMk = (float) coef (2.5);
     const float cLift = (float) coef (0.005), cSag = (float) coef (0.02);
     const auto& R = B.recipe;
-    const float dTrim = Dsp::driveTrim (trimDrive[b]);
-    const float kTube = dTrim * std::sqrt (7.2f * R.tube * ms.sat) / Dsp::refAmp, kTape = dTrim * std::sqrt (12.0f * R.tape * ms.sat) / Dsp::refAmp;
-    const float kXf = dTrim * dTrim * 4.0f * R.transformer * ms.sat / (Dsp::refAmp * Dsp::refAmp);
     const float baseBias = 0.222f * Dsp::refAmp;
-    const float life = b == 0 ? 0.0f : ms.life;          // no wobble below ~100 Hz: the low end stays solid
+    float thrOff[2], oMax[2], lMax[2], kTube[2], kTape[2], kXf[2];
+    for (int c = 0; c < 2; ++c)
+    {
+        const float td = trimDyn[c][b];
+        thrOff[c] = b < 2 ? -12.0f * td : 0.0f;
+        oMax[c] = ms.opto[b] * (b < 2 ? 1.0f + jmax (0.0f, td) : 1.0f);
+        lMax[c] = ms.lift[b] * (b >= 2 ? Dsp::dynTrim (td) : 1.0f);
+        const float dTrim = Dsp::driveTrim (trimDrive[c][b]);
+        kTube[c] = dTrim * std::sqrt (7.2f * R.tube * ms.sat) / Dsp::refAmp;
+        kTape[c] = dTrim * std::sqrt (12.0f * R.tape * ms.sat) / Dsp::refAmp;
+        kXf[c] = dTrim * dTrim * 4.0f * R.transformer * ms.sat / (Dsp::refAmp * Dsp::refAmp);
+    }
 
-    float lastGr = 0, lastLift = 0, lastRel = -100.0f;
+    float lastGr[2] {}, lastLift[2] {}, lastRel = -100.0f;
+    float* dd[2] { d0, d1 };
     for (int i = 0; i < n; ++i)
     {
-        const float e = B.amount.getNextValue();
+        const float ea[2] { B.amount[0].getNextValue(), B.amount[1].getNextValue() };
         const float gi = inGainA[(size_t) i];
         d0[i] *= gi; d1[i] *= gi;
-        const double p = 0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]);
-        B.pFast += cFast * (p - B.pFast);
-        B.pRef += (p > B.pRef ? cRefUp : cRef) * (p - B.pRef);
-        B.pLift += (p > B.pLift ? cLa : cLr) * (p - B.pLift);
-        const float refDb = (float) (10.0 * std::log10 (B.pRef + 1.0e-12));
-
-        float gainDb = 0.0f;
-        if (oMax > 0.0f)
+        float gainDb[2] {};
+        for (int c = 0; c < nDet; ++c)
         {
-            const float lvlDb = (float) (10.0 * std::log10 (B.pFast + 1.0e-12));
-            const float over = lvlDb - (refDb + 2.0f + thrOff);
-            const float soft = over < -3.0f ? 0.0f : over < 3.0f ? (over + 3.0f) * (over + 3.0f) / 12.0f : over;
-            const float grT = jmin (oMax * e, soft * 0.75f) * (refDb > -80.0f ? 1.0f : 0.0f);
-            B.optoF += (grT > B.optoF ? aF : rF) * (grT - B.optoF);
-            B.optoS += (grT > B.optoS ? aS : rS) * (grT - B.optoS);
-            const float gr = jmax (B.optoF, B.optoS);
-            B.makeup += cMk * (gr - B.makeup);
-            gainDb += B.makeup - gr;
-            lastGr = gr;
+            const float e = ea[c];
+            const double p = lk ? 0.5 * ((double) d0[i] * d0[i] + (double) d1[i] * d1[i]) : (double) dd[c][i] * dd[c][i];
+            B.pFast[c] += cFast * (p - B.pFast[c]);
+            B.pRef[c] += (p > B.pRef[c] ? cRefUp : cRef) * (p - B.pRef[c]);
+            B.pLift[c] += (p > B.pLift[c] ? cLa : cLr) * (p - B.pLift[c]);
+            const float refDb = (float) (10.0 * std::log10 (B.pRef[c] + 1.0e-12));
+            if (oMax[c] > 0.0f)
+            {
+                const float lvlDb = (float) (10.0 * std::log10 (B.pFast[c] + 1.0e-12));
+                const float over = lvlDb - (refDb + 2.0f + thrOff[c]);
+                const float soft = over < -3.0f ? 0.0f : over < 3.0f ? (over + 3.0f) * (over + 3.0f) / 12.0f : over;
+                const float grT = jmin (oMax[c] * e, soft * 0.75f) * (refDb > -80.0f ? 1.0f : 0.0f);
+                B.optoF[c] += (grT > B.optoF[c] ? aF : rF) * (grT - B.optoF[c]);
+                B.optoS[c] += (grT > B.optoS[c] ? aS : rS) * (grT - B.optoS[c]);
+                const float gr = jmax (B.optoF[c], B.optoS[c]);
+                B.makeup[c] += cMk * (gr - B.makeup[c]);
+                gainDb[c] += B.makeup[c] - gr;
+                lastGr[c] = gr;
+            }
+            if (lMax[c] > 0.0f)
+            {
+                const float lDb = (float) (10.0 * std::log10 (B.pLift[c] + 1.0e-12));
+                if (c == 0) lastRel = lDb - refDb;
+                const float t = jlimit (0.0f, 1.0f, (refDb - 3.0f - lDb) / 20.0f);
+                const float gate = jlimit (0.0f, 1.0f, (lDb + 85.0f) / 15.0f);
+                const float target = lMax[c] * e * t * t * (3.0f - 2.0f * t) * gate;
+                B.lift[c] += cLift * (target - B.lift[c]);
+                gainDb[c] += B.lift[c];
+                lastLift[c] = B.lift[c];
+            }
+            // the supply sags on loud moments: more drive, more bias (this is dynamics, not wobble, so the low band keeps it)
+            const float sagT = jlimit (0.0f, 2.0f, (float) std::sqrt (B.pFast[c] / (B.pRef[c] + 1.0e-12)) - 1.0f);
+            B.sag[c] += cSag * (sagT - B.sag[c]);
         }
-        if (lMax > 0.0f)
-        {
-            const float lDb = (float) (10.0 * std::log10 (B.pLift + 1.0e-12));
-            lastRel = lDb - refDb;
-            const float t = jlimit (0.0f, 1.0f, (refDb - 3.0f - lDb) / 20.0f);
-            const float gate = jlimit (0.0f, 1.0f, (lDb + 85.0f) / 15.0f);
-            const float target = lMax * e * t * t * (3.0f - 2.0f * t) * gate;
-            B.lift += cLift * (target - B.lift);
-            gainDb += B.lift;
-            lastLift = B.lift;
-        }
-        if (gainDb != 0.0f)
-        {
-            const float g = std::exp (gainDb * 0.11512925f);
-            d0[i] *= g; d1[i] *= g;
-        }
+        if (lk) gainDb[1] = gainDb[0];
+        for (int c = 0; c < 2; ++c)
+            if (gainDb[c] != 0.0f) dd[c][i] *= std::exp (gainDb[c] * 0.11512925f);
         B.pPre[0] += cMeas * ((double) d0[i] * d0[i] - B.pPre[0]);
         B.pPre[1] += cMeas * ((double) d1[i] * d1[i] - B.pPre[1]);
 
-        // the supply sags on loud moments: more drive, more bias (this is dynamics, not wobble, so the low band keeps it)
-        const float sagT = jlimit (0.0f, 2.0f, (float) std::sqrt (B.pFast / (B.pRef + 1.0e-12)) - 1.0f);
-        B.sag += cSag * (sagT - B.sag);
-        const float se = std::sqrt (e);
         for (int ch = 0; ch < 2; ++ch)
         {
-            // the channels differ a little (part tolerances) but never drift in level: only the harmonics shimmer
-            // Drive (and so the level) is the same in both channels. The channels differ only in the tube bias:
+            // Drive (and so the level) follows the side's own knob; the channels differ in the tube bias only:
             // that colours the even harmonics, and its fast shimmer is the "breathing" of the spectrum.
-            const float driveMul = 1.0f + 0.15f * B.sag;
-            const float biasMul = (1.0f + B.tolBias[ch] * (0.5f + age)) * (1.0f + 0.5f * B.sag);
+            const int c = lk ? 0 : ch;
+            const float se = std::sqrt (ea[lk ? 0 : ch]);
+            const float driveMul = 1.0f + 0.15f * B.sag[c];
+            // unlinked L/R: both channels share one bias, so identical settings never turn mono into stereo
+            const float tb = (! lk && ! procMs) ? B.tolBias[0] : B.tolBias[ch];
+            const float biasMul = (1.0f + tb * (0.5f + age)) * (1.0f + 0.5f * B.sag[c]);
             jitA[ch][(size_t) i] = 0.0f;
-            gTubeA[ch][(size_t) i] = kTube * se * driveMul;
+            gTubeA[ch][(size_t) i] = kTube[ch] * se * driveMul;
             bTubeA[ch][(size_t) i] = baseBias * biasMul;
-            gTapeA[ch][(size_t) i] = kTape * se * driveMul;
-            tXfA[ch][(size_t) i] = kXf * e * driveMul * driveMul;
+            gTapeA[ch][(size_t) i] = kTape[ch] * se * driveMul;
+            tXfA[ch][(size_t) i] = kXf[ch] * ea[lk ? 0 : ch] * driveMul * driveMul;
         }
     }
-    optoGr[b] = lastGr;
-    liftDb[b] = lastLift;
+    optoGr[b] = jmax (lastGr[0], lastGr[1]);
+    liftDb[b] = jmax (lastLift[0], lastLift[1]);
     liftRel[b] = lastRel;
-    thrDb[b] = (float) (10.0 * std::log10 (B.pRef + 1.0e-12)) + 2.0f + thrOff;
+    thrDb[b] = (float) (10.0 * std::log10 (B.pRef[0] + 1.0e-12)) + 2.0f + thrOff[0];
 
-    // ---- non-linear stage, oversampled, in mid/side: whatever sits in the centre is treated identically
-    //      in both channels, so the stereo image can never shift, however hard the iron is driven.
-    auto linkedIron = [&B] (float* l, float* r, int count, int shift, const float* gT, const float* bT, const float* gP, const float* tX,
-                            const float* bT2)
+    // ---- non-linear stage, oversampled.
+    //      Linked: in mid/side, so whatever sits in the centre is treated identically in both channels and the
+    //      stereo image can never shift, however hard the iron is driven. Unlinked: each processing channel
+    //      (M and S, or L and R) gets its own iron.
+    const float* gTubeA0 = gTubeA[0].data(); const float* bTubeA0 = bTubeA[0].data(); const float* gTapeA0 = gTapeA[0].data(); const float* tXfA0 = tXfA[0].data();
+    const float* gTubeA1 = gTubeA[1].data(); const float* bTubeA1 = bTubeA[1].data(); const float* gTapeA1 = gTapeA[1].data(); const float* tXfA1 = tXfA[1].data();
+    auto iron = [&] (float* l, float* r, int count, int shift)
     {
-        auto& sm = B.sat[0];
-        auto& ss = B.sat[1];
+        auto& s0 = B.sat[0];
+        auto& s1 = B.sat[1];
         for (int i = 0; i < count; ++i)
         {
             const int k = i >> shift;
-            const float mid = 0.5f * (l[i] + r[i]), side = 0.5f * (l[i] - r[i]);
-            const float m = sm.process (mid, gT[k], bT[k], gP[k], tX[k], 0.0f);
-            const float sd = ss.process (side, gT[k], bT2[k], gP[k], tX[k], 0.0f);
-            l[i] = m + sd;
-            r[i] = m - sd;
+            if (lk)
+            {
+                const float mid = 0.5f * (l[i] + r[i]), side = 0.5f * (l[i] - r[i]);
+                const float m = s0.process (mid, gTubeA0[k], bTubeA0[k], gTapeA0[k], tXfA0[k], 0.0f);
+                const float sd = s1.process (side, gTubeA1[k], bTubeA1[k], gTapeA1[k], tXfA1[k], 0.0f);
+                l[i] = m + sd;
+                r[i] = m - sd;
+            }
+            else
+            {
+                l[i] = s0.process (l[i], gTubeA0[k], bTubeA0[k], gTapeA0[k], tXfA0[k], 0.0f);
+                r[i] = s1.process (r[i], gTubeA1[k], bTubeA1[k], gTapeA1[k], tXfA1[k], 0.0f);
+            }
         }
     };
     auto blk = dsp::AudioBlock<float> (buf).getSubBlock (0, (size_t) n);
     if (auto* o = currentOs (b))
     {
         auto up = o->processSamplesUp (blk);
-        linkedIron (up.getChannelPointer (0), up.getChannelPointer (1), (int) up.getNumSamples(), ovsIndex,
-                    gTubeA[0].data(), bTubeA[0].data(), gTapeA[0].data(), tXfA[0].data(), bTubeA[1].data());
+        iron (up.getChannelPointer (0), up.getChannelPointer (1), (int) up.getNumSamples(), ovsIndex);
         o->processSamplesDown (blk);
     }
     else
-        linkedIron (d0, d1, n, 0, gTubeA[0].data(), bTubeA[0].data(), gTapeA[0].data(), tXfA[0].data(), bTubeA[1].data());
+        iron (d0, d1, n, 0);
 
     // ---- level after the iron stays where it was, IN gain is taken back,
     //      DC blocker (bias makes a little DC), then cross-fade with the untouched band
@@ -663,9 +744,10 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
         float* d = buf.getWritePointer (ch);
         const float* dl = ch == 0 ? dl0 : dl1;
         // linked: one make-up gain for both channels, so left and right never drift apart
-        const double post = B.pPost[0] + B.pPost[1], pre = B.pPre[0] + B.pPre[1];
+        const double post = lk ? B.pPost[0] + B.pPost[1] : B.pPost[ch], pre = lk ? B.pPre[0] + B.pPre[1] : B.pPre[ch];
         const float sgT = post > 1.0e-10 ? jlimit (0.5f, 2.0f, (float) std::sqrt (pre / post)) : 1.0f;
-        float act = B.act, sg = B.satGain[ch];
+        float act = B.act[ch], sg = B.satGain[ch];
+        const float tA = targetAct[ch];
         for (int i = 0; i < n; ++i)
         {
             sg += cSg * (sgT - sg);
@@ -673,14 +755,16 @@ void BreatheProcessor::processBand (int b, int n, float age, const Dsp::ModeScal
             const float y = x - B.dcX[ch] + R5 * B.dcY[ch];
             B.dcX[ch] = x;
             B.dcY[ch] = y;
-            act = targetAct > act ? jmin (1.0f, act + actStep) : jmax (0.0f, act - actStep);
+            act = tA > act ? jmin (1.0f, act + actStep) : jmax (0.0f, act - actStep);
             d[i] = dl[i] + (y - dl[i]) * act;
         }
         B.satGain[ch] = sg;
-        if (ch == 1) B.act = act;
+        B.act[ch] = act;
     }
-    if (B.act <= 0.0f)
-        for (auto& s : B.sat) s.reset();
+    if (conv)
+        for (int i = 0; i < n; ++i) { const float m = d0[i], sd = d1[i]; d0[i] = m + sd; d1[i] = m - sd; }
+    if (B.act[0] <= 0.0f && B.act[1] <= 0.0f)
+        for (auto& st : B.sat) st.reset();
 }
 
 //==============================================================================

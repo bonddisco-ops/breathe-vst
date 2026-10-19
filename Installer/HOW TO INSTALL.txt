@@ -1,4 +1,4 @@
-BREATHE 0.9 by Primal Rage Lab
+BREATHE 0.9.1 by Primal Rage Lab
 ===================================
 
 ---------------------------------------------------------------
@@ -36,6 +36,11 @@ MAC
  - MASTER - мастеринговая интенсивность, MIX - полная, для шин и дорожек.
  - IN - драйв железа с компенсацией уровня. LIN - линейно-фазовые кроссоверы.
  - ADVANCED внизу - точная настройка EQ, DRIVE, COMP и LIFT каждой полосы.
+ - Верхняя панель: Power, отмена/повтор, слоты A-D, Copy/Paste, Reset,
+   AUTO OUT (выравнивание громкости) и AUTO IN (рабочий уровень на входе железа),
+   прослушивание M S L R mono, режим M/S или L/R, Link и Split.
+ - Link выключен: две стороны (M/S или L/R) настраиваются отдельно. Split показывает
+   обе стороны сразу - второй ряд ручек.
  - Клик по логотипу - информация о плагине. Шестерёнка - тема, подсказки, тур.
  - Подробно - в PDF-руководстве.
 
@@ -66,4 +71,7 @@ USING IT
  - MASTER = mastering intensity, MIX = full intensity for buses and tracks.
  - IN = drive into the iron, level-compensated. LIN = linear-phase crossovers.
  - ADVANCED at the bottom = fine EQ, DRIVE, COMP and LIFT trims per band.
+ - Top bar: Power, undo/redo, A-D slots, Copy/Paste, Reset, AUTO OUT (loudness match),
+   AUTO IN (working level into the iron), listen M S L R mono, M/S or L/R, Link, Split.
+ - Link off: the two sides (M/S or L/R) are set separately. Split shows both at once.
  - Click the logo for version info. The gear holds themes, hints and the tour.

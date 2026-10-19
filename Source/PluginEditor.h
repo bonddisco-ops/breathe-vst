@@ -89,12 +89,17 @@ private:
     // logical layout, top to bottom: header | main panel (body y 0..560) | split row | ADVANCED panel | strip.
     // Body space starts under the header; "lower" space (ADVANCED, strip) is body space shifted up by the split row.
     bool split = false;
+    float splitAnim = 0.0f;
+    int prefW = 0;                 // width the user chose; the window gets narrower only while it would not fit the screen
+    bool autoSizing = false;
+    void fitWindow();                    // 0 = one row, 1 = two rows; eased in splitOff()
     int side = 0, advSide = 0;                 // 0 = Mid / Left, 1 = Side / Right
     juce::RangedAudioParameter *band1Param[4] {}, *band2Param[4] {}, *advA[12] {}, *advB[12] {};
     juce::RangedAudioParameter *procModeParam = nullptr, *linkParam = nullptr, *monitorParam = nullptr, *autoInParam = nullptr, *autoOutParam = nullptr;
-    float splitOff() const { return split ? (float) splitH : 0.0f; }     // the lower part of the main panel moves down this much
+    float splitEase() const { const float a = juce::jlimit (0.0f, 1.0f, splitAnim); return a * a * (3.0f - 2.0f * a); }
+    float splitOff() const { return (float) splitH * splitEase(); }     // the lower part of the main panel moves down this much
     float tubeOff() const { return splitOff() * 0.5f; }                   // the tube block sits centred between the two knob rows
-    float logicalH() const { return (float) (headerH + baseH + stripH + (advOpen ? advH : 0)) + splitOff(); }
+    float logicalH() const { return (float) (headerH + baseH + stripH + (advOpen ? advH : 0)) + ((split || splitAnim > 0.0f) ? (float) splitH : 0.0f); }
     float stripY() const { return (float) baseH + (advOpen ? (float) advH : 0.0f); }      // lower space
     juce::Point<float> lowerOf (juce::Point<float> p) const { return p.translated (0.0f, -splitOff()); }
     bool linked() const { return flag (linkParam); }

@@ -73,6 +73,11 @@ private:
     std::atomic<float> *mixP = nullptr, *ageP = nullptr, *outP = nullptr, *inP = nullptr, *ovsP = nullptr,
                        *linP = nullptr, *bypassP = nullptr, *modeP = nullptr, *monitorP = nullptr;
     std::atomic<float>* advEqP[4] {}, *advDriveP[4] {}, *advDynP[4] {};
+    // second side (Side in M/S, Right in L/R): used when Link is off
+    std::atomic<float>* knob2[4] {};
+    std::atomic<float>* advEq2P[4] {}, *advDrive2P[4] {}, *advDyn2P[4] {};
+    std::atomic<float> *linkP = nullptr, *procModeP = nullptr;
+    bool linked = true, procMs = true;
     std::atomic<float> *autoInP = nullptr, *autoOutP = nullptr;
     // AUTO IN: slow input level -> gain that puts the iron at its working level; AUTO OUT: loudness match
     double autoInPow = 0.0158, autoOutIn = 1.0e-6, autoOutOut = 1.0e-6;   // 0.0158 = -18 dB RMS
@@ -82,7 +87,7 @@ private:
 public:
     std::atomic<float> autoInDb { 0.0f }, autoOutDb { 0.0f };         // what AUTO is doing right now, for the editor
 private:
-    float trimEq[4] {}, trimDrive[4] {}, trimDyn[4] {};      // smoothed, -1..+1
+    float trimEq[2][4] {}, trimDrive[2][4] {}, trimDyn[2][4] {};      // [side][band], smoothed, -1..+1
 
     // ---- configuration that changes the latency
     int ovsIndex = -1;
@@ -111,11 +116,14 @@ private:
         Dsp::Saturator sat[2];
         Dsp::Shimmer shimmer[2];
         float tolDrive[2] {}, tolBias[2] {};
-        double pFast = 0, pRef = 1.0e-6, pLift = 0, pPre[2] { 1.0e-9, 1.0e-9 }, pPost[2] { 1.0e-9, 1.0e-9 };
-        float optoF = 0, optoS = 0, makeup = 0, lift = 0, sag = 0, satGain[2] { 1, 1 };
+        // [c] = processing channel: L/R, or M/S when the sides are unlinked in M/S mode.
+        // Linked: one detector (index 0) drives both channels.
+        double pFast[2] {}, pRef[2] { 1.0e-6, 1.0e-6 }, pLift[2] {}, pPre[2] { 1.0e-9, 1.0e-9 }, pPost[2] { 1.0e-9, 1.0e-9 };
+        float optoF[2] {}, optoS[2] {}, makeup[2] {}, lift[2] {}, sag[2] {}, satGain[2] { 1, 1 };
         float dcX[2] {}, dcY[2] {};
-        float act = 0, gain = 1;
-        juce::SmoothedValue<float> amount;
+        float act[2] {}, gain = 1;
+        juce::SmoothedValue<float> amount[2];
+        bool active() const { return act[0] > 0.0f || act[1] > 0.0f || amount[0].getTargetValue() > 0.0f || amount[1].getTargetValue() > 0.0f; }
         Dsp::Recipe recipe {};
     } bands[4];
 

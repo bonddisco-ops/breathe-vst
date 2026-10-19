@@ -10,7 +10,7 @@ constexpr float pi = MathConstants<float>::pi;
 const Rectangle<float> tubeWin { cx - 58.0f, 134.0f, 116.0f, 192.0f };
 const Rectangle<float> scr { 300.0f, 392.0f, 580.0f, 124.0f };
 const Point<float> gearC { 1095.0f, 46.0f }, bypassC { 1040.0f, 44.0f }, ovsC { cx - 96.0f, 353.0f }, linC { cx + 96.0f, 353.0f },
-                   masterC { cx - 24.0f, 353.0f }, mixC { cx + 32.0f, 353.0f };
+                   masterC { cx - 28.0f, 353.0f }, mixC { cx + 36.0f, 353.0f };
 constexpr float meterTop = 138.0f, meterBot = 320.0f;
 const float lightAngle = std::atan2 (-1.0f, -0.7f);
 
@@ -81,6 +81,45 @@ void glowStroke (Graphics& g, const Path& p, Colour c, float w, float glow)
 }
 }
 
+namespace
+{
+// Light ring made of separate segments, like the LED meters: dim track, lit segments between from and to
+// (angles in radians, 0 = up, clockwise), the edge segment lit in proportion.
+void segmentedRing (Graphics& g, float x, float y, float R, float from, float to, int nSeg, float width, Colour c, float glow, float trackAlpha)
+{
+    const float a0 = -pi * 0.75f, span = pi * 1.5f, step = span / (float) nSeg, gap = step * 0.28f;
+    const float lo = jmin (from, to), hi = jmax (from, to);
+    Path track, lit;
+    float edgeA0 = 0.0f, edgeA1 = 0.0f, edgeAmt = 0.0f;
+    for (int i = 0; i < nSeg; ++i)
+    {
+        const float s0 = a0 + (float) i * step + gap * 0.5f, s1 = s0 + step - gap;
+        track.addCentredArc (x, y, R, R, 0.0f, s0, s1, true);
+        const float cover = jlimit (0.0f, 1.0f, (jmin (hi, s1) - jmax (lo, s0)) / (s1 - s0));
+        if (cover >= 0.999f) lit.addCentredArc (x, y, R, R, 0.0f, s0, s1, true);
+        else if (cover > 0.02f) { edgeA0 = s0; edgeA1 = s1; edgeAmt = cover; }
+    }
+    const PathStrokeType st (width, PathStrokeType::mitered, PathStrokeType::butt);
+    g.setColour (c.withAlpha (trackAlpha));
+    g.strokePath (track, st);
+    Path edge;
+    if (edgeAmt > 0.0f) edge.addCentredArc (x, y, R, R, 0.0f, edgeA0, edgeA1, true);
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const Path& p = pass == 0 ? lit : edge;
+        if (p.isEmpty()) continue;
+        const float k = pass == 0 ? 1.0f : edgeAmt;
+        for (int i = 3; i >= 1; --i)
+        {
+            g.setColour (c.withMultipliedAlpha (glow * k * 0.09f * (float) (4 - i)));
+            g.strokePath (p, PathStrokeType (width + (float) i * 3.5f, PathStrokeType::mitered, PathStrokeType::butt));
+        }
+        g.setColour (c.withMultipliedAlpha (k));
+        g.strokePath (p, st);
+    }
+}
+}
+
 const BreatheEditor::KnobDef BreatheEditor::knobDefs[BreatheEditor::numKnobs] = {
     { Params::band[0], "LOW", 172, 205, 58, true, 0.0f },
     { Params::band[1], "LOW-MID", 356, 205, 58, true, 0.0f },
@@ -142,6 +181,7 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
     }
     advOpen = (bool) proc.apvts.state.getProperty ("advOpen", false);
     split = (bool) proc.apvts.state.getProperty ("split", false);
+    splitAnim = split ? 1.0f : 0.0f;
     for (int b = 0; b < 4; ++b)
     {
         band1Param[b] = proc.apvts.getParameter (Params::band[b]);
@@ -198,8 +238,8 @@ BreatheEditor::BreatheEditor (BreatheProcessor& p) : AudioProcessorEditor (&p), 
     setResizable (true, true);
     applySizeLimits();
     ready = true;
-    const int ww = jlimit (944, 2360, w);
-    setSize (ww, roundToInt ((float) ww * logicalH() / W));
+    prefW = jlimit (944, 2360, w);
+    fitWindow();
 
     lastTick = Time::getMillisecondCounterHiRes() * 0.001;
     startTimerHz (40);
@@ -238,8 +278,9 @@ void BreatheEditor::applyTheme (const String& name)
 
 void BreatheEditor::resized()
 {
-    if (ready)
+    if (ready && ! autoSizing)
     {
+        prefW = getWidth();
         proc.apvts.state.setProperty ("uiW", getWidth(), nullptr);
         saveSetting ("w", String (getWidth()));
     }
@@ -306,7 +347,7 @@ int BreatheEditor::knobAt (Point<float> p) const
 {
     for (int k = 0; k < numKnobs; ++k)
     {
-        if (k >= 8 && ! split) break;
+        if (k >= 8 && ! (split && splitAnim >= 1.0f)) break;
         const float ky = knobDefs[k].y + (k >= 4 && k < 8 ? splitOff() : 0.0f);
         if (p.getDistanceFrom ({ knobDefs[k].x, ky }) < knobDefs[k].r + 8.0f) return k;
     }
@@ -596,10 +637,12 @@ void BreatheEditor::buildPanel (float phys)
 
     g.restoreState();
     // knob scales, grooves and names (the small knobs move down with the lower part when split)
-    for (int k = 0; k < (split ? 12 : 8); ++k)
+    for (int k = 0; k < (splitAnim > 0.0f ? 12 : 8); ++k)
     {
         Graphics::ScopedSaveState ks (g);
         if (k >= 4 && k < 8) g.addTransform (AffineTransform::translation (0.0f, splitOff()));
+        if (k >= 8) { g.reduceClipRegion (Rectangle<int> (0, 348, 2000, 4000)); g.addTransform (AffineTransform::translation (0.0f, splitOff() - (float) splitH)); g.beginTransparencyLayer (splitEase()); }
+        struct EndLayer { Graphics& g; bool on; ~EndLayer() { if (on) g.endTransparencyLayer(); } } endLayer { g, k >= 8 };
         const auto& d = knobDefs[k];
         const int n = d.big ? 11 : 7;
         const float R = d.r + (d.big ? 27.0f : 15.0f);
@@ -768,23 +811,16 @@ void BreatheEditor::drawKnob (Graphics& g, int k, bool hot)
     // light ring
     const float R = r + (d.big ? 15.0f : 8.0f);
     {
-        Path full;
-        full.addCentredArc (x, y, R, R, 0.0f, -pi * 0.75f, pi * 0.75f, true);
-        g.setColour (acc.withAlpha (0.10f));
-        g.strokePath (full, PathStrokeType (d.big ? 4.0f : 2.4f, PathStrokeType::curved, PathStrokeType::rounded));
         const float from = bipolar ? 0.0f : -pi * 0.75f, to = bipolar ? (v - 0.5f) * pi * 1.5f : -pi * 0.75f + v * pi * 1.5f;
         const float amt = bipolar ? (k == 7 ? 1.0f : std::abs (v - 0.5f) * 2.0f) : v;
-        if (k == 7)
+        const int nSeg = d.big ? 33 : 17;
+        const float w = d.big ? 5.0f : 3.2f;
+        if (k == 7)   // IN: the whole ring is the level light
+            segmentedRing (g, x, y, R, -pi * 0.75f, pi * 0.75f, nSeg, w, acc.withAlpha (0.9f * on), 0.9f * on, 0.10f);
+        else
         {
-            // IN: the whole ring is the level light
-            glowStroke (g, full, acc.withAlpha (0.9f * on), 2.6f, 0.9f * on);
-        }
-        else if (std::abs (to - from) > 0.003f)
-        {
-            Path arc;
-            arc.addCentredArc (x, y, R, R, 0.0f, jmin (from, to), jmax (from, to), true);
             const float gl = (0.4f + 0.6f * amt) * on * dim;
-            glowStroke (g, arc, acc.withAlpha (gl), d.big ? 4.0f : 2.4f, gl);
+            segmentedRing (g, x, y, R, from, std::abs (to - from) > 0.003f ? to : from, nSeg, w, acc.withAlpha (gl), gl, 0.10f);
         }
     }
 
@@ -929,29 +965,74 @@ void BreatheEditor::drawJewel (Graphics& g, Point<float> c, float r, bool on, Co
 
 void BreatheEditor::drawSwitchText (Graphics& g, const String& text, Point<float> c, bool lit)
 {
+    // small glass key: dark lens with a specular top, lit from inside when on
     const auto& t = look.theme();
-    const Font f = uiFont (11.0f, true, 0.12f);
-    const Rectangle<float> r (c.x - 40.0f, c.y - 9.0f, 80.0f, 18.0f);
-    g.setFont (f);
+    const Font f = uiFont (10.5f, true, 0.12f);
+    const float w = GlyphArrangement::getStringWidth (f, text) + 18.0f, h = 19.0f, rad = 5.5f;
+    const Rectangle<float> r (c.x - w * 0.5f, c.y - h * 0.5f, w, h);
+
+    // seat in the panel
+    g.setColour (Colours::black.withAlpha (0.55f));
+    g.fillRoundedRectangle (r.expanded (1.6f).translated (0, 0.8f), rad + 1.6f);
+    g.setColour (Colours::white.withAlpha (t.lightBg ? 0.35f : 0.06f));
+    g.drawRoundedRectangle (r.expanded (1.6f), rad + 1.6f, 0.8f);
+
+    // body
     if (lit)
     {
-        for (auto o : { Point<float> (-1, 0), Point<float> (1, 0), Point<float> (0, -1), Point<float> (0, 1) })
+        // pink glow spilling around the key
+        for (int k = 3; k >= 1; --k)
         {
-            g.setColour (t.accent.withAlpha (0.25f));
-            g.drawText (text, r + o * 1.5f, Justification::centred);
+            g.setColour (t.accent.withAlpha (0.07f));
+            g.fillRoundedRectangle (r.expanded ((float) k * 2.5f), rad + (float) k * 2.5f);
         }
-        g.setColour (t.accent.withAlpha (0.12f));
-        g.fillRoundedRectangle (r.withSizeKeepingCentre (GlyphArrangement::getStringWidth (f, text) + 16.0f, 18.0f), 6.0f);
-        g.setColour (mixWith (t.accent, 0.35f));
-        g.drawText (text, r, Justification::centred);
+        ColourGradient body (mixWith (t.accent, 0.25f).withAlpha (0.95f), c.x, r.getY(), t.accent.darker (0.9f), c.x, r.getBottom(), false);
+        body.addColour (0.55, t.accent.darker (0.35f));
+        g.setGradientFill (body);
     }
     else
     {
-        g.setColour (t.lightBg ? Colours::white.withAlpha (0.4f) : Colours::black.withAlpha (0.75f));
-        g.drawText (text, r.translated (0, 1), Justification::centred);
-        g.setColour (t.mute);
-        g.drawText (text, r, Justification::centred);
+        ColourGradient body (Colour (0xff2a272b), c.x, r.getY(), Colour (0xff0b0a0c), c.x, r.getBottom(), false);
+        g.setGradientFill (body);
     }
+    g.fillRoundedRectangle (r, rad);
+
+    // inner core light (lit) / depth (off)
+    if (lit)
+    {
+        ColourGradient core (mixWith (t.accent, 0.6f).withAlpha (0.55f), c.x, c.y + 2.0f, t.accent.withAlpha (0.0f), c.x + w * 0.5f, c.y + 2.0f, true);
+        g.setGradientFill (core);
+        g.fillRoundedRectangle (r.reduced (1.0f), rad - 1.0f);
+    }
+
+    // specular reflection on the upper half of the glass
+    {
+        auto top = r.reduced (1.6f, 1.2f).withHeight (h * 0.46f);
+        ColourGradient spec (Colours::white.withAlpha (lit ? 0.42f : 0.16f), c.x, top.getY(), Colours::white.withAlpha (0.0f), c.x, top.getBottom(), false);
+        g.setGradientFill (spec);
+        g.fillRoundedRectangle (top, rad - 1.5f);
+    }
+    // rim
+    g.setColour (lit ? mixWith (t.accent, 0.5f).withAlpha (0.8f) : Colours::white.withAlpha (0.12f));
+    g.drawRoundedRectangle (r.reduced (0.4f), rad, 0.8f);
+    g.setColour (Colours::black.withAlpha (0.5f));
+    g.drawLine (r.getX() + rad, r.getBottom() - 0.5f, r.getRight() - rad, r.getBottom() - 0.5f, 0.8f);
+
+    // legend
+    g.setFont (f);
+    if (lit)
+    {
+        g.setColour (t.accent.darker (1.2f).withAlpha (0.6f));
+        g.drawText (text, r.translated (0, 0.8f), Justification::centred);
+        g.setColour (Colours::white.withAlpha (0.96f));
+    }
+    else
+    {
+        g.setColour (Colours::black.withAlpha (0.8f));
+        g.drawText (text, r.translated (0, 0.8f), Justification::centred);
+        g.setColour (t.mute);
+    }
+    g.drawText (text, r, Justification::centred);
 }
 
 //==============================================================================
@@ -1314,10 +1395,10 @@ void BreatheEditor::paint (Graphics& g)
     const float edges[5] { 20.0f, xoFreq (0), xoFreq (1), xoFreq (2), 20000.0f };
     for (int k = 0; k < numKnobs; ++k)
     {
-        if (k >= 8 && ! split) break;
-        if (! visible (knobArea (k))) continue;
+        if (k >= 8 && splitAnim <= 0.0f) break;
         Graphics::ScopedSaveState ks (g);
         if (k >= 4 && k < 8) g.addTransform (AffineTransform::translation (0.0f, splitOff()));
+        if (k >= 8) { g.reduceClipRegion (Rectangle<int> (0, 348, 2000, 4000)); g.addTransform (AffineTransform::translation (0.0f, splitOff() - (float) splitH)); g.beginTransparencyLayer (splitEase()); }
         drawKnob (g, k, k == hoverKnob || k == dragKnob);
         if (k < 4 || k >= 8)
         {
@@ -1327,15 +1408,17 @@ void BreatheEditor::paint (Graphics& g)
             g.drawText (freqShort (edges[b]) + String::fromUTF8 ("\xe2\x80\x93") + freqShort (edges[b + 1]) + " Hz",
                         Rectangle<float> (knobDefs[k].x - 80, knobDefs[k].y + 124, 160, 14), Justification::centred);
         }
+        if (k >= 8) g.endTransparencyLayer();
     }
     // split view: which side each row works on
-    if (split)
+    if (splitAnim > 0.0f)
     {
         const bool ms = procModeParam->getValue() < 0.5f;
+        g.beginTransparencyLayer (splitEase());
         for (int row = 0; row < 2; ++row)
         {
             const String tag = row == 0 ? (ms ? "M" : "L") : (ms ? "S" : "R");
-            const float yy = row == 0 ? knobDefs[0].y : knobDefs[8].y;
+            const float yy = row == 0 ? knobDefs[0].y : knobDefs[8].y + splitOff() - (float) splitH;
             g.setFont (uiFont (26.0f, true));
             for (const float xx : { 62.0f, W - 62.0f })
             {
@@ -1345,6 +1428,7 @@ void BreatheEditor::paint (Graphics& g)
                 g.drawText (tag, Rectangle<float> (xx - 20, yy - 18, 40, 36), Justification::centred);
             }
         }
+        g.endTransparencyLayer();
     }
     {
         Graphics::ScopedSaveState lower (g);
@@ -1370,6 +1454,23 @@ void BreatheEditor::tick (double dt)
 {
     clock += dt;
     const float fdt = (float) dt;
+
+    // split animation (~0.3 s); the window shrinks only after the second row has folded away
+    {
+        const float target = split ? 1.0f : 0.0f;
+        if (splitAnim != target)
+        {
+            splitAnim = target > splitAnim ? jmin (1.0f, splitAnim + fdt / 0.3f) : jmax (0.0f, splitAnim - fdt / 0.3f);
+            panel = {};
+            knobSignature = {};
+            repaint();
+            if (splitAnim == 0.0f && ! split)
+            {
+                applySizeLimits();
+                fitWindow();
+            }
+        }
+    }
 
     // meters
     const float now[2] { dbToFrac (jmax (proc.inPeak[0].exchange (0.0f), proc.inPeak[1].exchange (0.0f))),
@@ -1737,7 +1838,7 @@ void BreatheEditor::showGearMenu()
     m.addSubMenu ("Help language", langs);
     m.addSeparator();
     m.addItem ("Start tour", [this] { tour.start (lang); });
-    m.addItem ("Reset window size", [this] { setSize (baseW, roundToInt (logicalH())); });
+    m.addItem ("Reset window size", [this] { prefW = baseW; fitWindow(); });
     m.addSeparator();
     m.addItem ("About Breathe", [this] { showAbout(); });
     m.showMenuAsync (PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (toPixels (Rectangle<float> (gearC.x - 18, gearC.y - 18, 36, 36)))));
@@ -1763,8 +1864,26 @@ namespace
 void BreatheEditor::applySizeLimits()
 {
     const float hl = logicalH();
-    setResizeLimits (944, roundToInt (944.0f * hl / W), 2360, roundToInt (2360.0f * hl / W));
+    setResizeLimits (560, roundToInt (560.0f * hl / W), 2360, roundToInt (2360.0f * hl / W));
     if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) W / (double) hl);
+}
+
+void BreatheEditor::fitWindow()
+{
+    // keep the whole plug-in on the screen: Advanced + split is 1244 px tall at 100 %,
+    // taller than most laptop screens, and some hosts (Logic, Bitwig on macOS) then cut the window off
+    const float hl = logicalH();
+    if (prefW <= 0) prefW = getWidth();
+    int w = prefW;
+    const auto& displays = Desktop::getInstance().getDisplays();
+    const auto* d = isShowing() ? displays.getDisplayForRect (getScreenBounds()) : displays.getPrimaryDisplay();
+    if (d != nullptr)
+    {
+        const int maxH = d->userArea.getHeight() - 90;           // room for the host's title bar
+        if ((float) w * hl / W > (float) maxH) w = jmax (560, (int) ((float) maxH * W / hl));
+    }
+    const ScopedValueSetter<bool> sv (autoSizing, true);
+    setSize (w, roundToInt ((float) w * hl / W));
 }
 
 void BreatheEditor::setAdvancedOpen (bool open)
@@ -1773,7 +1892,7 @@ void BreatheEditor::setAdvancedOpen (bool open)
     advOpen = open;
     proc.apvts.state.setProperty ("advOpen", open, nullptr);
     applySizeLimits();
-    setSize (getWidth(), roundToInt ((float) getWidth() * logicalH() / W));
+    fitWindow();
     panel = {};
     repaint();
 }
@@ -1865,8 +1984,12 @@ void BreatheEditor::setSplit (bool on)
     split = on;
     proc.apvts.state.setProperty ("split", on, nullptr);
     remap();
-    applySizeLimits();
-    setSize (getWidth(), roundToInt ((float) getWidth() * logicalH() / W));
+    if (on)
+    {
+        // grow the window first, then the second row slides out (the tick runs the animation)
+        applySizeLimits();
+        fitWindow();
+    }
     panel = {};
     repaint();
 }
@@ -2062,17 +2185,8 @@ void BreatheEditor::drawAdvanced (Graphics& g)
             g.setColour (acc.withAlpha (0.45f));
             g.drawEllipse (c.x - R - 9, c.y - R - 9, (R + 9) * 2, (R + 9) * 2, 1.0f);
         }
-        Path track;
-        track.addCentredArc (c.x, c.y, R, R, 0.0f, -pi * 0.75f, pi * 0.75f, true);
-        g.setColour (col.withAlpha (0.14f));
-        g.strokePath (track, PathStrokeType (2.6f, PathStrokeType::curved, PathStrokeType::rounded));
         const float ang = v / 100.0f * pi * 0.75f;
-        if (std::abs (v) >= 0.05f)
-        {
-            Path arc;
-            arc.addCentredArc (c.x, c.y, R, R, 0.0f, jmin (0.0f, ang), jmax (0.0f, ang), true);
-            glowStroke (g, arc, col, 2.6f, on ? 0.8f : 0.0f);
-        }
+        segmentedRing (g, c.x, c.y, R, 0.0f, std::abs (v) >= 0.05f ? ang : 0.0f, 16, 3.0f, col, on ? 0.8f : 0.0f, 0.14f);
         g.setColour (Colour (0xffaaaaaa));
         g.fillEllipse (c.x - 1.4f, c.y - R - 6.4f, 2.8f, 2.8f);
         g.setColour (Colours::black.withAlpha (0.5f));
