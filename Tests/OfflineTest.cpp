@@ -177,7 +177,7 @@ int main (int argc, char** argv)
             ed->applyTheme (th.name);
             ed->hideWelcomeForTest();
             for (int i = 0; i < 4; ++i) { auto blk = run (p, in); ed->renderForTest (0.5); }
-            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, SystemStats::getEnvironmentVariable ("BRT_SCALE", "1").getFloatValue());
             File f = outDir.getChildFile ("theme_" + th.name + ".png");
             f.deleteFile();
             if (auto os = f.createOutputStream()) PNGImageFormat().writeImageToStream (img, *os);
